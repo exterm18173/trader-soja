@@ -1,0 +1,109 @@
+services:
+  db:
+    image: postgres:16
+    container_name: trader_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trader
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      TZ: America/Sao_Paulo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: trader_api
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      TZ: America/Sao_Paulo
+      DB_URL: postgresql://trader:trader@db:5432/trader
+      DATABASE_URL: postgresql://trader:trader@db:5432/trader
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_me}
+      JWT_ALG: HS256
+      ACCESS_TOKEN_EXPIRE_MIN: "10080"
+      PYTHONPATH: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "
+      cd /app &&
+      alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  fx_worker:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: trader_fx_worker
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      TZ: America/Sao_Paulo
+      DB_URL: postgresql://trader:trader@db:5432/trader
+      FARM_ID: "1"
+      INTERVAL_SEC: "5"
+      PERSIST_INTERVAL_SEC: "30"
+      DESCONTO_NEGOCIO_PCT: "0.0"
+      MARKET_START_HOUR: "9"
+      MARKET_END_HOUR: "18"
+      MODEL_VERSION: fx_amaggi_like_v1
+      FX_SOURCE: yahoo_chart
+      TIMEOUT: "12"
+      RETRIES: "3"
+      SLEEP_BETWEEN: "1.2"
+    volumes:
+      - ./workers:/workers
+    command: >
+      python -u fx_model/fx_model_worker.py
+
+  cbot_worker:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: trader_cbot_worker
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      TZ: America/Sao_Paulo
+      DB_URL: postgresql://trader:trader@db:5432/trader
+      FARM_ID: "1"
+      INTERVAL_SEC: "15"
+      CBOT_SYMBOLS: "ZS=F"
+      TIMEOUT: "12"
+    volumes:
+      - ./workers:/workers
+    command: >
+      python -u cbot/cbot_worker.py
+
+  compact_worker:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: trader_compact_worker
+    profiles: ["maintenance"]
+    depends_on:
+      - db
+    environment:
+      TZ: America/Sao_Paulo
+      DB_URL: postgresql://trader:trader@db:5432/trader
+      KEEP_FULL_DAYS: "7"
+      BUCKET_MINUTES: "5"
+    volumes:
+      - ./workers:/workers
+    command: >
+      python -u maintenance/compact_market_data.py
+
+volumes:
+  pgdata:
