@@ -1,19 +1,14 @@
-from sqlalchemy import ForeignKey, Date, DateTime, Float, func, UniqueConstraint
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import ForeignKey, Date, DateTime, Numeric, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
+from app.db.mixins import TimestampMixin
 
 
-class FxManualPoint(Base):
-    """
-    Cotação manual do comprador (ex: AMAGGI) para o dólar do mês futuro.
-
-    Ex:
-      ref_mes = 2026-08-01
-      fx = 5.7895
-      captured_at = 2026-02-04 15:52:12 -03 (salva como timestamptz)
-    """
-
+class FxManualPoint(Base, TimestampMixin):
     __tablename__ = "fx_manual_points"
     __table_args__ = (
         UniqueConstraint("farm_id", "source_id", "captured_at", "ref_mes", name="uq_fx_manual_point"),
@@ -24,11 +19,10 @@ class FxManualPoint(Base):
     farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), nullable=False, index=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("fx_sources.id", ondelete="RESTRICT"), nullable=False, index=True)
 
-    captured_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    ref_mes: Mapped[Date] = mapped_column(Date, nullable=False, index=True)  # YYYY-MM-01
-    fx: Mapped[float] = mapped_column(Float, nullable=False)
+    # quem lançou manualmente (muito útil)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ref_mes: Mapped[date] = mapped_column(Date, nullable=False, index=True)  # YYYY-MM-01
+
+    fx: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)

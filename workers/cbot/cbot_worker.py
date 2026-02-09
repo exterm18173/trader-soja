@@ -9,7 +9,7 @@ DB_URL = os.getenv("DB_URL")
 if not DB_URL:
     raise RuntimeError("Defina DB_URL=postgresql://user:pass@host:5432/db")
 
-FARM_ID = int(os.getenv("FARM_ID", "1"))
+FARM_ID = int(os.getenv("FARM_ID", "3"))
 
 # símbolos (pode adicionar mais depois)
 SYMBOLS = [s.strip() for s in os.getenv("CBOT_SYMBOLS", "ZS=F").split(",") if s.strip()]

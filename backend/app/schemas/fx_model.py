@@ -1,16 +1,19 @@
+# app/schemas/fx_model.py
 from datetime import datetime, date
+from pydantic import BaseModel, Field
 
-from app.schemas.base import SchemaBase
 
-
-class FxModelPointRead(SchemaBase):
+class FxModelPointRead(BaseModel):
     ref_mes: date
     t_anos: float
     dolar_sint: float
     dolar_desc: float
 
+    class Config:
+        from_attributes = True
 
-class FxModelRunRead(SchemaBase):
+
+class FxModelRunRead(BaseModel):
     id: int
     farm_id: int
     as_of_ts: datetime
@@ -22,3 +25,10 @@ class FxModelRunRead(SchemaBase):
     desconto_pct: float
     model_version: str
     source: str
+
+    class Config:
+        from_attributes = True
+
+
+class FxModelRunWithPointsRead(FxModelRunRead):
+    points: list[FxModelPointRead] = Field(default_factory=list)

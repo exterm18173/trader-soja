@@ -1,13 +1,16 @@
+# app/schemas/hedges.py
 from datetime import datetime, date
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
+# ----------- CREATE -----------
 class HedgeCbotCreate(BaseModel):
     executado_em: datetime
-    volume_input_value: float
-    volume_input_unit: str  # TON|SACA
-    volume_ton: float
-    cbot_usd_per_bu: float
+    volume_input_value: float = Field(gt=0)
+    volume_input_unit: str = Field(min_length=1, max_length=10)  # TON|SACA
+    volume_ton: float = Field(gt=0)
+
+    cbot_usd_per_bu: float = Field(gt=0)
     ref_mes: date | None = None
     symbol: str | None = None
     observacao: str | None = None
@@ -15,32 +18,39 @@ class HedgeCbotCreate(BaseModel):
 
 class HedgePremiumCreate(BaseModel):
     executado_em: datetime
-    volume_input_value: float
-    volume_input_unit: str
-    volume_ton: float
-    premium_value: float
-    premium_unit: str  # USD_BU|USD_TON
+    volume_input_value: float = Field(gt=0)
+    volume_input_unit: str = Field(min_length=1, max_length=10)  # TON|SACA
+    volume_ton: float = Field(gt=0)
+
+    premium_value: float  # pode ser negativo dependendo do mercado
+    premium_unit: str = Field(min_length=1, max_length=20)  # USD_BU|USD_TON
     base_local: str | None = None
     observacao: str | None = None
 
 
 class HedgeFxCreate(BaseModel):
     executado_em: datetime
-    usd_amount: float
-    brl_per_usd: float
+    volume_ton: float = Field(gt=0)
+
+    usd_amount: float = Field(gt=0)
+    brl_per_usd: float = Field(gt=0)
+
     ref_mes: date | None = None
-    tipo: str = "CURVA_SCRIPT"
+    tipo: str = Field(default="CURVA_SCRIPT", max_length=40)
     observacao: str | None = None
 
 
+# ----------- READ -----------
 class HedgeCbotRead(BaseModel):
     id: int
     contract_id: int
     executed_by_user_id: int
+
     executado_em: datetime
     volume_input_value: float
     volume_input_unit: str
     volume_ton: float
+
     cbot_usd_per_bu: float
     ref_mes: date | None
     symbol: str | None
@@ -54,10 +64,12 @@ class HedgePremiumRead(BaseModel):
     id: int
     contract_id: int
     executed_by_user_id: int
+
     executado_em: datetime
     volume_input_value: float
     volume_input_unit: str
     volume_ton: float
+
     premium_value: float
     premium_unit: str
     base_local: str | None
@@ -71,9 +83,13 @@ class HedgeFxRead(BaseModel):
     id: int
     contract_id: int
     executed_by_user_id: int
+
     executado_em: datetime
+    volume_ton: float
+
     usd_amount: float
     brl_per_usd: float
+
     ref_mes: date | None
     tipo: str
     observacao: str | None

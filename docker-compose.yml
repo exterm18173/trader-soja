@@ -51,7 +51,7 @@ services:
     environment:
       TZ: America/Sao_Paulo
       DB_URL: postgresql://trader:trader@db:5432/trader
-      FARM_ID: "1"
+      FARM_ID: "3"
       INTERVAL_SEC: "5"
       PERSIST_INTERVAL_SEC: "30"
       DESCONTO_NEGOCIO_PCT: "0.0"
@@ -78,7 +78,7 @@ services:
     environment:
       TZ: America/Sao_Paulo
       DB_URL: postgresql://trader:trader@db:5432/trader
-      FARM_ID: "1"
+      FARM_ID: "3"
       INTERVAL_SEC: "15"
       CBOT_SYMBOLS: "ZS=F"
       TIMEOUT: "12"

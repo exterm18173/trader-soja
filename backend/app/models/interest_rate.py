@@ -1,23 +1,26 @@
-from sqlalchemy import ForeignKey, Date, Float, DateTime, func, Index
+from datetime import date
+from decimal import Decimal
+
+from sqlalchemy import Date, ForeignKey, Numeric, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
+from app.db.mixins import TimestampMixin
 
 
-class InterestRate(Base):
+class InterestRate(Base, TimestampMixin):
     __tablename__ = "interest_rates"
+    __table_args__ = (
+        UniqueConstraint("farm_id", "rate_date", name="uq_interest_rates_farm_date"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    rate_date: Mapped[Date] = mapped_column(Date, nullable=False, index=True)
-    cdi_annual: Mapped[float] = mapped_column(Float, nullable=False)   # ex 0.105
-    sofr_annual: Mapped[float] = mapped_column(Float, nullable=False)  # ex 0.052
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
+    rate_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
-
-Index("ix_interest_rates_farm_date", InterestRate.farm_id, InterestRate.rate_date)
+    # ex: 0.105000 (10.5% a.a.)
+    cdi_annual: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    sofr_annual: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)

@@ -1,4 +1,6 @@
 from datetime import date, datetime
+from decimal import Decimal
+
 from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,16 +15,17 @@ class FxQuote(Base, TimestampMixin):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
     farm_id: Mapped[int] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), index=True, nullable=False)
     source_id: Mapped[int] = mapped_column(ForeignKey("fx_sources.id", ondelete="RESTRICT"), index=True, nullable=False)
 
-    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # quem criou (se veio de worker pode ser NULL)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
-    # ✅ aqui era str; deve ser datetime
     capturado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
 
-    ref_mes: Mapped[date] = mapped_column(Date, index=True, nullable=False)
-    brl_per_usd: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False)
+    ref_mes: Mapped[date] = mapped_column(Date, index=True, nullable=False)  # YYYY-MM-01
+    brl_per_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
 
     observacao: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
