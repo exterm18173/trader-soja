@@ -42,7 +42,6 @@ class _ContractsResultDashboardScreenState
     _debounce?.cancel();
     _searchCtrl.dispose();
     // Segurança extra se o VM for singleton acima do Navigator
-    context.read<ContractsResultDashboardVM>().stopRealtimePolling();
     super.dispose();
   }
 

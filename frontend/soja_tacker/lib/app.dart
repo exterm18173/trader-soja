@@ -8,10 +8,12 @@ import 'core/auth/auth_storage.dart';
 import 'core/auth/farm_context.dart';
 import 'core/auth/farm_storage.dart';
 
+import 'data/models/contracts_mtm/contracts_mtm_dashboard_vm.dart';
 import 'data/repositories/alerts_repository.dart';
 import 'data/repositories/auth_repository.dart';
 import 'data/repositories/cbot_quotes_repository.dart';
 import 'data/repositories/cbot_sources_repository.dart';
+import 'data/repositories/contracts_mtm_repository.dart';
 import 'data/repositories/contracts_repository.dart';
 import 'data/repositories/farms_repository.dart';
 import 'data/repositories/dashboard_repository.dart';
@@ -35,6 +37,7 @@ import 'viewmodels/auth/auth_vm.dart';
 import 'viewmodels/cbot/cbot_quotes_vm.dart';
 import 'viewmodels/cbot/cbot_sources_vm.dart';
 import 'viewmodels/contracts/contract_detail_vm.dart';
+import 'viewmodels/contracts/contracts_mtm_vm.dart';
 import 'viewmodels/contracts/contracts_vm.dart';
 import 'viewmodels/dashboard/contracts_result_dashboard_vm.dart';
 import 'viewmodels/dashboard/dashboard_vm.dart';
@@ -171,10 +174,20 @@ class TraderSojaApp extends StatelessWidget {
           create: (_) =>
               FxFuturesQuotesVM(fxQuotesRepo, fxSourcesRepo, farmContext),
         ),
-
+        Provider(
+          create: (ctx) => ContractsMtmRepository(ctx.read<ApiClient>()),
+        ),
+        ChangeNotifierProvider(
+          create: (ctx) => ContractsMtmVM(ctx.read<ContractsMtmRepository>()),
+        ),
         ChangeNotifierProvider(
           create: (_) => ExpensesUsdVM(expensesRepo, farmContext),
         ),
+        ChangeNotifierProvider(
+          create: (context) =>
+              ContractsMtmDashboardVM(context.read<ContractsMtmRepository>()),
+        ),
+
         ChangeNotifierProvider(
           create: (ctx) => DashboardVM(
             ctx.read<FarmContext>(),

@@ -18,6 +18,7 @@ from app.api.routers.hedges import router as hedges_router
 from app.api.routers.expenses import router as expenses_router
 from app.api.routers.alerts import router as alerts_router
 from app.api.routers.dashboard import router as dashboard_router
+from app.api.routers.contracts_mtm import router as contracts_mtm
 
 
 def create_app() -> FastAPI:
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
 
     # --- Dashboard ---
     app.include_router(dashboard_router)
+    app.include_router(contracts_mtm)
 
     @app.get("/health")
     def health():

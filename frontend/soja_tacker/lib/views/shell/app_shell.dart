@@ -5,7 +5,6 @@ import '../../core/auth/farm_context.dart';
 import '../../routes/app_routes.dart';
 
 // Telas
-//import '../../views/dashboard/dashboard_screen.dart';
 import '../../views/rates/interest_rates_screen.dart';
 import '../../views/rates/offsets_screen.dart';
 import '../../views/expenses/expenses_usd_screen.dart';
@@ -21,7 +20,11 @@ import '../../views/cbot/cbot_quotes_screen.dart';
 import '../../views/contracts/contracts_screen.dart';
 import '../../views/alerts/alert_rules_screen.dart';
 import '../../views/alerts/alert_events_screen.dart';
+
+import '../contracts/contracts_mtm_dashboard_screen.dart';
+import '../contracts/contracts_mtm_screen.dart';
 import '../dashboard/contracts_result_dashboard_screen.dart';
+
 import '../fx/fx_futures_quotes_screen.dart';
 import '../fx/fx_sources_screen.dart';
 import '../hedges/hedges_screen.dart';
@@ -50,7 +53,7 @@ class ShellItem {
 }
 
 /// ----------------------------
-/// APP SHELL (TURBINADA)
+/// APP SHELL (COM TOGGLE DE MENU NO DESKTOP)
 /// ----------------------------
 
 class AppShell extends StatefulWidget {
@@ -70,6 +73,11 @@ class _AppShellState extends State<AppShell> {
   // estados de colapso por seção (desktop)
   late final List<bool> _expanded;
 
+  // ✅ novo: permite ocultar/exibir a sidebar mesmo em telas grandes
+  bool _sidebarOpen = true;
+
+  void _toggleSidebar() => setState(() => _sidebarOpen = !_sidebarOpen);
+
   late final List<ShellSection> _sections = [
     ShellSection(
       label: 'Visão Geral',
@@ -78,6 +86,16 @@ class _AppShellState extends State<AppShell> {
           label: 'Dashboard',
           icon: Icons.dashboard_outlined,
           page: ContractsResultDashboardScreen(),
+        ),
+        ShellItem(
+          label: 'Contratos',
+          icon: Icons.description_outlined,
+          page: ContractsMtmScreen(farmId: 3),
+        ),
+        ShellItem(
+          label: 'Contratos MT',
+          icon: Icons.table_chart_outlined,
+          page: ContractsMtmDashboardScreen(farmId: 3),
         ),
       ],
     ),
@@ -89,7 +107,11 @@ class _AppShellState extends State<AppShell> {
           icon: Icons.percent,
           page: InterestRatesScreen(),
         ),
-        ShellItem(label: 'Offsets', icon: Icons.tune, page: OffsetsScreen()),
+        ShellItem(
+          label: 'Offsets',
+          icon: Icons.tune,
+          page: OffsetsScreen(),
+        ),
         ShellItem(
           label: 'Despesas USD',
           icon: Icons.attach_money,
@@ -122,7 +144,7 @@ class _AppShellState extends State<AppShell> {
         ),
         ShellItem(
           label: 'Fx Sources',
-          icon: Icons.science,
+          icon: Icons.source_outlined,
           page: FxSourcesScreen(),
         ),
       ],
@@ -133,7 +155,7 @@ class _AppShellState extends State<AppShell> {
         ShellItem(
           label: 'Hedges',
           icon: Icons.height_rounded,
-          page: HedgesScreen(contractId: 2),
+          page: HedgesScreen(contractId: 3),
         ),
       ],
     ),
@@ -183,7 +205,7 @@ class _AppShellState extends State<AppShell> {
         ShellItem(
           label: 'FX',
           icon: Icons.fax_outlined,
-          page: FxFuturesQuotesScreen(farmId: 3,),
+          page: FxFuturesQuotesScreen(farmId: 3),
         ),
       ],
     ),
@@ -195,6 +217,7 @@ class _AppShellState extends State<AppShell> {
   void initState() {
     super.initState();
     _expanded = List<bool>.filled(_sections.length, true);
+
     _searchCtrl.addListener(() {
       setState(() => _query = _searchCtrl.text.trim().toLowerCase());
     });
@@ -264,6 +287,16 @@ class _AppShellState extends State<AppShell> {
           page: current.label,
         ),
         actions: [
+          if (wide) ...[
+            IconButton(
+              tooltip: _sidebarOpen ? 'Ocultar menu' : 'Mostrar menu',
+              icon: Icon(_sidebarOpen ? Icons.menu_open : Icons.menu),
+              onPressed: _toggleSidebar,
+            ),
+            const SizedBox(width: 8),
+            _FarmChipCompact(farmId: farmCtx.farmId),
+            const SizedBox(width: 8),
+          ],
           if (!wide) ...[
             _FarmChipCompact(farmId: farmCtx.farmId),
             const SizedBox(width: 8),
@@ -280,7 +313,6 @@ class _AppShellState extends State<AppShell> {
           const SizedBox(width: 8),
         ],
       ),
-
       body: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         color: cs.surface,
@@ -292,7 +324,8 @@ class _AppShellState extends State<AppShell> {
 
             return Row(
               children: [
-                SizedBox(
+                _SidebarHost(
+                  open: _sidebarOpen,
                   width: 312,
                   child: _Sidebar(
                     sections: _sections,
@@ -309,11 +342,12 @@ class _AppShellState extends State<AppShell> {
                     onClearSearch: () => _searchCtrl.clear(),
                   ),
                 ),
-                VerticalDivider(
-                  width: 1,
-                  thickness: 1,
-                  color: cs.outlineVariant,
-                ),
+                if (_sidebarOpen)
+                  VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: cs.outlineVariant,
+                  ),
                 Expanded(
                   child: Container(
                     color: cs.surface,
@@ -325,7 +359,6 @@ class _AppShellState extends State<AppShell> {
           },
         ),
       ),
-
       bottomNavigationBar: wide
           ? const SizedBox.shrink()
           : NavigationBar(
@@ -406,6 +439,38 @@ class _PageFade extends StatelessWidget {
       switchOutCurve: Curves.easeIn,
       child: KeyedSubtree(key: ValueKey(child.runtimeType), child: child),
       transitionBuilder: (c, a) => FadeTransition(opacity: a, child: c),
+    );
+  }
+}
+
+/// ----------------------------
+/// SIDEBAR HOST (ANIMAÇÃO ABRIR/FECHAR)
+/// ----------------------------
+
+class _SidebarHost extends StatelessWidget {
+  final bool open;
+  final double width;
+  final Widget child;
+
+  const _SidebarHost({
+    required this.open,
+    required this.width,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      width: open ? width : 0,
+      child: ClipRect(
+        child: Align(
+          alignment: Alignment.centerLeft,
+          widthFactor: open ? 1 : 0,
+          child: open ? child : const SizedBox.shrink(),
+        ),
+      ),
     );
   }
 }
@@ -603,10 +668,10 @@ class _SectionHeader extends StatelessWidget {
               child: Text(
                 label.toUpperCase(),
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1,
-                  color: cs.onSurfaceVariant,
-                ),
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                      color: cs.onSurfaceVariant,
+                    ),
               ),
             ),
             Icon(
