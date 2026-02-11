@@ -17,7 +17,7 @@ if not DB_URL:
 
 FARM_ID = int(os.getenv("FARM_ID", "1"))
 
-# Datas-alvo (vencimentos) — você pode trocar por meses 01 do mês, se preferir
+# Datas-alvo (vencimentos)
 TARGET_DATES = [
     date(2026, 4, 30),
     date(2026, 5, 30),
@@ -26,6 +26,7 @@ TARGET_DATES = [
     date(2026, 8, 30),
     date(2026, 9, 30),
     date(2026, 10, 30),
+    date(2026, 11, 30),
 ]
 
 INTERVAL_SEC = int(os.getenv("INTERVAL_SEC", "5"))
@@ -43,6 +44,8 @@ MARKET_END_HOUR = int(os.getenv("MARKET_END_HOUR", "18"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", "fx_amaggi_like_v1")
 SOURCE = os.getenv("FX_SOURCE", "yahoo_chart")
 
+DEBUG = os.getenv("DEBUG", "1").strip().lower() not in ("0", "false", "no", "off")
+
 HEADERS_DEFAULT = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -51,6 +54,35 @@ HEADERS_DEFAULT = {
     )
 }
 
+# =========================================================
+# DEBUG HELPERS / NORMALIZAÇÃO
+# =========================================================
+
+def dbg(*args):
+    if DEBUG:
+        print("[DEBUG]", *args)
+
+def norm_rate(x: float) -> float:
+    """
+    Aceita taxa anual em decimal (0.135) ou em percentual (13.5).
+    Retorna sempre decimal.
+    """
+    x = float(x)
+    if x > 1.5:  # 13.5% etc
+        return x / 100.0
+    return x
+
+def norm_offset_pp(x: float) -> float:
+    """
+    Offset em 'p.p.' pode vir como:
+      - 0.004 (já decimal)
+      - 0.4   (querendo dizer 0.4 p.p. => 0.004)
+    Retorna sempre decimal.
+    """
+    x = float(x)
+    if x > 0.2:  # 0.4 p.p., 0.8 p.p., etc
+        return x / 100.0
+    return x
 
 # =========================================================
 # TEMPO / MERCADO
@@ -60,13 +92,11 @@ def now_br() -> datetime:
     br_tz = tz.gettz("America/Sao_Paulo")
     return datetime.now(br_tz)
 
-
 def is_market_open(dt_br: datetime) -> bool:
     if dt_br.weekday() >= 5:
         return False
     hour_float = dt_br.hour + dt_br.minute / 60.0
     return MARKET_START_HOUR <= hour_float <= MARKET_END_HOUR
-
 
 # =========================================================
 # YAHOO CHART (USDBRL=X)
@@ -95,7 +125,6 @@ def _fetch_chart(interval: str):
         return None
 
     return list(zip(timestamps, closes))
-
 
 def get_spot_usdbrl_at(dt_br: datetime) -> float:
     dt_utc = dt_br.astimezone(timezone.utc)
@@ -129,7 +158,6 @@ def get_spot_usdbrl_at(dt_br: datetime) -> float:
 
     raise RuntimeError("Não foi possível obter spot USDBRL=X no Yahoo chart.")
 
-
 # =========================================================
 # CUPOM / FORWARD
 # =========================================================
@@ -137,12 +165,10 @@ def get_spot_usdbrl_at(dt_br: datetime) -> float:
 def calc_coupon_sujo(cdi: float, sofr: float) -> float:
     return (1.0 + cdi) / (1.0 + sofr) - 1.0
 
-
 def calc_coupon_amaggi_like(cdi: float, sofr: float, offset: float) -> float:
     r_sujo = calc_coupon_sujo(cdi, sofr)
     r_adj = r_sujo - offset
     return max(r_adj, 0.0)
-
 
 def forward_from_spot(
     spot: float,
@@ -158,7 +184,6 @@ def forward_from_spot(
     cupom_t = (1.0 + annual_rate) ** t_years - 1.0
     fwd = spot * (1.0 + cupom_t)
     return t_years, cupom_t, fwd
-
 
 # =========================================================
 # LEITURA CONFIG NO BD (POR FAZENDA)
@@ -180,7 +205,6 @@ def load_latest_interest_rates(cur, farm_id: int):
         raise RuntimeError("Tabela interest_rates vazia para esta fazenda.")
     return float(row[0]), float(row[1])
 
-
 def load_latest_offset(cur, farm_id: int):
     cur.execute(
         """
@@ -197,7 +221,6 @@ def load_latest_offset(cur, farm_id: int):
         raise RuntimeError("Tabela offset_calibration vazia para esta fazenda.")
     return float(row[0])
 
-
 # =========================================================
 # PERSISTÊNCIA NOVA ESTRUTURA
 # =========================================================
@@ -212,8 +235,13 @@ def persist_spot_tick(cur, farm_id: int, ts_utc: datetime, price: float, source:
         (farm_id, ts_utc, float(price), source),
     )
 
-
-def persist_run_and_points(cur, farm_id: int, as_of_ts_utc: datetime, run_data: dict, points: list[dict]) -> int:
+def persist_run_and_points(
+    cur,
+    farm_id: int,
+    as_of_ts_utc: datetime,
+    run_data: dict,
+    points: list[dict],
+) -> int:
     """
     Cria um fx_model_run e retorna run_id.
     Depois insere os fx_model_points (PK: run_id + ref_mes).
@@ -245,39 +273,34 @@ def persist_run_and_points(cur, farm_id: int, as_of_ts_utc: datetime, run_data: 
     )
     run_id = int(cur.fetchone()[0])
 
-    values = []
-    for p in points:
-        values.append(
-            (
-                run_id,
-                p["ref_mes"],
-                p["t_anos"],
-                p["dolar_sint"],
-                p["dolar_desc"],
-            )
+    values = [
+        (
+            run_id,
+            p["ref_mes"],
+            p["t_anos"],
+            p["dolar_sint"],
+            p["dolar_desc"],
         )
+        for p in points
+    ]
 
     psycopg2.extras.execute_values(
-    cur,
-    """
-    INSERT INTO fx_model_points (
-        run_id, ref_mes, t_anos, dolar_sint, dolar_desc
+        cur,
+        """
+        INSERT INTO fx_model_points (
+            run_id, ref_mes, t_anos, dolar_sint, dolar_desc
+        )
+        VALUES %s
+        ON CONFLICT (run_id, ref_mes) DO NOTHING
+        """,
+        values,
     )
-    VALUES %s
-    ON CONFLICT (run_id, ref_mes) DO NOTHING
-    """,
-    values,
-)
-
-
 
     return run_id
 
-
 def to_ref_mes(d: date) -> date:
-    # normaliza para YYYY-MM-01
-    return date(d.year, d.month, 1)
-
+    # normaliza para YYYY-MM-30
+    return date(d.year, d.month, 30)
 
 # =========================================================
 # LOOP
@@ -289,6 +312,7 @@ def main():
     cur = conn.cursor()
 
     print(f"\nFX worker (farm_id={FARM_ID}) - model={MODEL_VERSION}")
+    print(f"DEBUG={'ON' if DEBUG else 'OFF'}")
     print("Tabelas: fx_spot_ticks, fx_model_runs, fx_model_points, interest_rates, offset_calibration\n")
 
     last_persist_ts: datetime | None = None
@@ -303,18 +327,51 @@ def main():
 
             ts_utc = dt_br.astimezone(timezone.utc)
 
-            cdi_annual, sofr_annual = load_latest_interest_rates(cur, FARM_ID)
-            offset_value = load_latest_offset(cur, FARM_ID)
+            # 1) carrega taxas
+            raw_cdi, raw_sofr = load_latest_interest_rates(cur, FARM_ID)
+            raw_offset = load_latest_offset(cur, FARM_ID)
 
+            # 2) normaliza unidades (se necessário)
+            cdi_annual = norm_rate(raw_cdi)
+            sofr_annual = norm_rate(raw_sofr)
+            offset_value = norm_offset_pp(raw_offset)
+
+            dbg("RAW CDI:", raw_cdi, "| RAW SOFR:", raw_sofr, "| RAW OFFSET:", raw_offset)
+            dbg("NORM CDI:", cdi_annual, "| NORM SOFR:", sofr_annual, "| NORM OFFSET:", offset_value)
+
+            # 3) spot
             spot = get_spot_usdbrl_at(dt_br)
+            dbg("SPOT:", spot)
 
+            # 4) cupom
+            coupon_sujo = calc_coupon_sujo(cdi_annual, sofr_annual)
             coupon_annual = calc_coupon_amaggi_like(cdi_annual, sofr_annual, offset_value)
 
+            dbg("CUPOM SUJO:", coupon_sujo, "| CUPOM AMAGGI:", coupon_annual)
+
+            if coupon_annual <= 0.0:
+                raise RuntimeError(
+                    "CUPOM ZERADO ❌ (isso faz todos os meses terem o mesmo forward=spot). "
+                    f"CDI={cdi_annual} SOFR={sofr_annual} OFFSET={offset_value} "
+                    f"(RAW: CDI={raw_cdi} SOFR={raw_sofr} OFFSET={raw_offset})"
+                )
+
+            # 5) calcula curva
             points = []
+            dbg("---- CURVA FUTURA ----")
             for d in TARGET_DATES:
-                t_years, _cupom_t, fwd = forward_from_spot(spot, dt_br, d, coupon_annual)
+                t_years, cupom_t, fwd = forward_from_spot(spot, dt_br, d, coupon_annual)
+
                 dolar_sint = float(fwd)
                 dolar_desc = dolar_sint * (1.0 - float(DESCONTO_NEGOCIO_PCT))
+
+                dbg(
+                    d.strftime("%m/%Y"),
+                    "| t_years=", f"{t_years:.4f}",
+                    "| cupom_t=", f"{cupom_t*100:.4f}%",
+                    "| fwd=", f"{fwd:.6f}",
+                )
+
                 points.append(
                     {
                         "ref_mes": to_ref_mes(d),
@@ -323,7 +380,9 @@ def main():
                         "dolar_desc": float(dolar_desc),
                     }
                 )
+            dbg("----------------------")
 
+            # 6) persistência
             should_persist = False
             if last_persist_ts is None:
                 should_persist = True
@@ -368,7 +427,6 @@ def main():
 
     cur.close()
     conn.close()
-
 
 if __name__ == "__main__":
     main()

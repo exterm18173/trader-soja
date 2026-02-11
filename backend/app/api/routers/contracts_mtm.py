@@ -4,15 +4,14 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_farm_membership_from_path
 from app.db.session import get_db
-
 from app.schemas.contracts_mtm import ContractsMtmResponse
 from app.services.contracts_mtm_service import ContractsMtmService
 
-# ✅ prefix separado para não competir com /contracts/{contract_id}
 router = APIRouter(
     prefix="/farms/{farm_id}/contracts-mtm",
     tags=["Contracts MTM"],
 )
+
 service = ContractsMtmService()
 
 
@@ -23,11 +22,16 @@ def contracts_mtm(
     only_open: bool = Query(default=True),
     ref_mes: str | None = Query(
         default=None,
-        description="YYYY-MM-01; se informado, força o ref_mes para FX",
+        description=(
+            "YYYY-MM-30; se informado, força o ref_mes para FX (CBOT usa ref_mes do hedge/contrato)."
+        ),
     ),
     default_symbol: str = Query(
-        default="ZS=F",
-        description="fallback quando contrato não tem hedge CBOT com symbol",
+        default="AUTO",
+        description=(
+            "CBOT: 'AUTO' usa o vencimento do mês do contrato (ex: Jul/26 -> ZSN26.CBT). "
+            "Ou informe símbolo fixo (ex: ZS=F)."
+        ),
     ),
     limit: int = Query(default=200, ge=1, le=2000),
     db: Session = Depends(get_db),

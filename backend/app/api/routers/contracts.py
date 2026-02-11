@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, get_farm_membership_from_path
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.contracts import ContractCreate, ContractRead, ContractUpdate 
+from app.schemas.contracts import ContractCreate, ContractRead, ContractUpdate
 from app.services.contracts_service import ContractsService
 
 router = APIRouter(prefix="/farms/{farm_id}/contracts", tags=["Contracts"])
@@ -67,3 +67,14 @@ def update_contract(
     membership=Depends(get_farm_membership_from_path),
 ):
     return service.update(db, farm_id, contract_id, payload)
+
+
+@router.delete("/{contract_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_contract(
+    farm_id: int,
+    contract_id: int,
+    db: Session = Depends(get_db),
+    membership=Depends(get_farm_membership_from_path),
+):
+    service.delete(db, farm_id, contract_id)
+    return None

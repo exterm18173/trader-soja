@@ -41,13 +41,11 @@ class ContractsService:
         return s
 
     def _validate_frete(self, frete_total, frete_per_ton) -> None:
-        # não permite ambos
         if frete_total is not None and frete_per_ton is not None:
             raise HTTPException(
                 status_code=400,
                 detail="Informe apenas um: frete_brl_total OU frete_brl_per_ton",
             )
-        # reforço: não permite negativo (mesmo que schema já valide)
         if frete_total is not None and float(frete_total) < 0:
             raise HTTPException(status_code=400, detail="frete_brl_total não pode ser negativo")
         if frete_per_ton is not None and float(frete_per_ton) < 0:
@@ -59,7 +57,6 @@ class ContractsService:
 
         vol_ton = float(payload.volume_total_ton or 0)
         if vol_ton <= 0:
-            # fallback: tenta calcular
             if unit == "SACA":
                 vol_ton = saca_to_ton(float(payload.volume_input_value))
             else:
@@ -75,7 +72,6 @@ class ContractsService:
                     detail="Para FIXO_BRL informe preco_fixo_brl_value e preco_fixo_brl_unit",
                 )
 
-        # ✅ frete (novo)
         frete_total = getattr(payload, "frete_brl_total", None)
         frete_per_ton = getattr(payload, "frete_brl_per_ton", None)
         frete_obs = getattr(payload, "frete_obs", None)
@@ -93,7 +89,6 @@ class ContractsService:
             status="ABERTO",
             preco_fixo_brl_value=payload.preco_fixo_brl_value,
             preco_fixo_brl_unit=payload.preco_fixo_brl_unit,
-            # ✅ frete (novo)
             frete_brl_total=frete_total,
             frete_brl_per_ton=frete_per_ton,
             frete_obs=frete_obs,
@@ -151,7 +146,6 @@ class ContractsService:
         if payload.data_entrega is not None:
             c.data_entrega = payload.data_entrega
 
-        # volume
         if payload.volume_input_unit is not None:
             c.volume_input_unit = self._norm_unit(payload.volume_input_unit)
         if payload.volume_input_value is not None:
@@ -159,14 +153,12 @@ class ContractsService:
         if payload.volume_total_ton is not None:
             c.volume_total_ton = float(payload.volume_total_ton)
 
-        # preço fixo
         if payload.preco_fixo_brl_value is not None:
             c.preco_fixo_brl_value = payload.preco_fixo_brl_value
         if payload.preco_fixo_brl_unit is not None:
             c.preco_fixo_brl_unit = payload.preco_fixo_brl_unit
 
-        # ✅ frete (novo)
-        # Se setar um, zera o outro (evita ficar com os dois preenchidos)
+        # frete: se setar um, zera o outro
         if getattr(payload, "frete_brl_total", None) is not None and getattr(payload, "frete_brl_per_ton", None) is not None:
             raise HTTPException(
                 status_code=400,
@@ -178,14 +170,14 @@ class ContractsService:
             if v < 0:
                 raise HTTPException(status_code=400, detail="frete_brl_total não pode ser negativo")
             c.frete_brl_total = v
-            c.frete_brl_per_ton = None  # zera o outro
+            c.frete_brl_per_ton = None
 
         if getattr(payload, "frete_brl_per_ton", None) is not None:
             v = float(payload.frete_brl_per_ton)
             if v < 0:
                 raise HTTPException(status_code=400, detail="frete_brl_per_ton não pode ser negativo")
             c.frete_brl_per_ton = v
-            c.frete_brl_total = None  # zera o outro
+            c.frete_brl_total = None
 
         if getattr(payload, "frete_obs", None) is not None:
             c.frete_obs = payload.frete_obs
@@ -193,7 +185,6 @@ class ContractsService:
         if payload.observacao is not None:
             c.observacao = payload.observacao
 
-        # regra: se FIXO_BRL precisa preço
         if (c.tipo_precificacao or "").upper() == "FIXO_BRL":
             if c.preco_fixo_brl_value is None or c.preco_fixo_brl_unit is None:
                 raise HTTPException(
@@ -204,3 +195,8 @@ class ContractsService:
         db.commit()
         db.refresh(c)
         return c
+
+    def delete(self, db: Session, farm_id: int, contract_id: int) -> None:
+        c = self.get(db, farm_id, contract_id)
+        db.delete(c)
+        db.commit()

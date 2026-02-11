@@ -9,7 +9,7 @@ class ContractUpdate {
   final double? precoFixoBrlValue;
   final String? precoFixoBrlUnit;
 
-  // ✅ NOVO: frete
+  // ✅ frete
   final double? freteBrlTotal;
   final double? freteBrlPerTon;
   final String? freteObs;
@@ -31,19 +31,21 @@ class ContractUpdate {
   });
 
   Map<String, dynamic> toJson() => {
-        'status': status,
-        'data_entrega': dataEntrega?.toIso8601String().substring(0, 10),
-        'volume_input_value': volumeInputValue,
-        'volume_input_unit': volumeInputUnit,
-        'volume_total_ton': volumeTotalTon,
-        'preco_fixo_brl_value': precoFixoBrlValue,
-        'preco_fixo_brl_unit': precoFixoBrlUnit,
+        if (status != null) 'status': status,
+        if (dataEntrega != null) 'data_entrega': dataEntrega!.toIso8601String().substring(0, 10),
 
-        // ✅ NOVO: frete
-        'frete_brl_total': freteBrlTotal,
-        'frete_brl_per_ton': freteBrlPerTon,
-        'frete_obs': freteObs,
+        if (volumeInputValue != null) 'volume_input_value': volumeInputValue,
+        if (volumeInputUnit != null) 'volume_input_unit': volumeInputUnit,
+        if (volumeTotalTon != null) 'volume_total_ton': volumeTotalTon,
 
-        'observacao': observacao,
+        if (precoFixoBrlValue != null) 'preco_fixo_brl_value': precoFixoBrlValue,
+        if (precoFixoBrlUnit != null) 'preco_fixo_brl_unit': precoFixoBrlUnit,
+
+        // ✅ frete
+        if (freteBrlTotal != null) 'frete_brl_total': freteBrlTotal,
+        if (freteBrlPerTon != null) 'frete_brl_per_ton': freteBrlPerTon,
+        if (freteObs != null) 'frete_obs': freteObs,
+
+        if (observacao != null) 'observacao': observacao,
       };
 }

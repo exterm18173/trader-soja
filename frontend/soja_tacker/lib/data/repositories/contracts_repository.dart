@@ -1,4 +1,3 @@
-// lib/data/repositories/contracts_repository.dart
 import '../../core/api/api_client.dart';
 import '../../core/api/api_exception.dart';
 import '../models/contracts/contract_create.dart';
@@ -9,19 +8,9 @@ class ContractsRepository {
   final ApiClient api;
   ContractsRepository(this.api);
 
-  Future<ContractRead> create({
-    required int farmId,
-    required ContractCreate payload,
-  }) async {
-    try {
-      final res = await api.dio.post(
-        '/farms/$farmId/contracts',
-        data: payload.toJson(),
-      );
-      return ContractRead.fromJson(res.data as Map<String, dynamic>);
-    } on Exception catch (e) {
-      throw _asApiException(e, fallback: 'Erro ao criar contrato');
-    }
+  ApiException _asApiException(Object e, {String fallback = 'Erro'}) {
+    if (e is ApiException) return e;
+    return ApiException(message: fallback);
   }
 
   Future<List<ContractRead>> list({
@@ -29,8 +18,8 @@ class ContractsRepository {
     String? status,
     String? produto,
     String? tipoPrecificacao,
-    String? entregaFrom, // yyyy-mm-dd
-    String? entregaTo, // yyyy-mm-dd
+    String? entregaFrom,
+    String? entregaTo,
     String? q,
   }) async {
     try {
@@ -45,22 +34,38 @@ class ContractsRepository {
           if (q != null) 'q': q,
         },
       );
-      final list = (res.data as List).cast<dynamic>();
-      return list.map((e) => ContractRead.fromJson(e as Map<String, dynamic>)).toList();
+
+      final data = (res.data as List).cast<dynamic>();
+      return data.map((e) => ContractRead.fromJson((e as Map).cast<String, dynamic>())).toList();
     } on Exception catch (e) {
       throw _asApiException(e, fallback: 'Erro ao listar contratos');
     }
   }
 
-  Future<ContractRead> getById({
+  Future<ContractRead> get({
     required int farmId,
     required int contractId,
   }) async {
     try {
       final res = await api.dio.get('/farms/$farmId/contracts/$contractId');
-      return ContractRead.fromJson(res.data as Map<String, dynamic>);
+      return ContractRead.fromJson((res.data as Map).cast<String, dynamic>());
     } on Exception catch (e) {
-      throw _asApiException(e, fallback: 'Erro ao obter contrato');
+      throw _asApiException(e, fallback: 'Erro ao carregar contrato');
+    }
+  }
+
+  Future<ContractRead> create({
+    required int farmId,
+    required ContractCreate payload,
+  }) async {
+    try {
+      final res = await api.dio.post(
+        '/farms/$farmId/contracts',
+        data: payload.toJson(),
+      );
+      return ContractRead.fromJson((res.data as Map).cast<String, dynamic>());
+    } on Exception catch (e) {
+      throw _asApiException(e, fallback: 'Erro ao criar contrato');
     }
   }
 
@@ -74,14 +79,20 @@ class ContractsRepository {
         '/farms/$farmId/contracts/$contractId',
         data: payload.toJson(),
       );
-      return ContractRead.fromJson(res.data as Map<String, dynamic>);
+      return ContractRead.fromJson((res.data as Map).cast<String, dynamic>());
     } on Exception catch (e) {
       throw _asApiException(e, fallback: 'Erro ao atualizar contrato');
     }
   }
 
-  ApiException _asApiException(Object e, {required String fallback}) {
-    if (e is ApiException) return e;
-    return ApiException(message: fallback, details: e.toString());
+  Future<void> delete({
+    required int farmId,
+    required int contractId,
+  }) async {
+    try {
+      await api.dio.delete('/farms/$farmId/contracts/$contractId');
+    } on Exception catch (e) {
+      throw _asApiException(e, fallback: 'Erro ao excluir contrato');
+    }
   }
 }

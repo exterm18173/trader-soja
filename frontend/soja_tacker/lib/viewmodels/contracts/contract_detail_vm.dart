@@ -28,7 +28,7 @@ class ContractDetailVM extends BaseViewModel {
     setLoading(true);
     clearError();
     try {
-      contract = await _repo.getById(farmId: farmId, contractId: contractId!);
+      contract = await _repo.get(farmId: farmId, contractId: contractId!);
     } on ApiException catch (e) {
       setError(e);
       contract = null;

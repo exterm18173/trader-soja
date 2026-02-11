@@ -155,7 +155,7 @@ class _AppShellState extends State<AppShell> {
         ShellItem(
           label: 'Hedges',
           icon: Icons.height_rounded,
-          page: HedgesScreen(contractId: 3),
+          page: HedgesScreen(contractId: 2),
         ),
       ],
     ),
