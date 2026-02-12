@@ -70,9 +70,8 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const AppShell());
 
       case AppRoutes.hedges:
-        final contractId = settings.arguments as int;
         return MaterialPageRoute(
-          builder: (_) => HedgesScreen(contractId: contractId),
+          builder: (_) => HedgesScreen(),
         );
 
       case AppRoutes.contractDetail:

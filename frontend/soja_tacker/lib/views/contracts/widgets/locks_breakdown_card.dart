@@ -33,7 +33,7 @@ class _LocksBreakdownCardState extends State<LocksBreakdownCard> {
 
   double _safe(double v) => v.isFinite ? v : 0.0;
 
-  double _sumUsd(LockBreakdown b) => _safe(b.locked.usd) + _safe(b.partial.usd) + _safe(b.open.usd);
+  double _sumUsd(LockBreakdown b) => _safe(b.locked.usd) + _safe(b.open.usd);
 
   @override
   void initState() {
@@ -111,13 +111,6 @@ class _LocksBreakdownCardState extends State<LocksBreakdownCard> {
           a: widget.breakdown.locked,
           totalsUsd: widget.totalsUsd,
           tone: cs.primary.withValues(alpha: 0.90),
-        ),
-        const SizedBox(height: 8),
-        _LineRowAdaptive(
-          label: 'Parcial',
-          a: widget.breakdown.partial,
-          totalsUsd: widget.totalsUsd,
-          tone: cs.secondary.withValues(alpha: 0.90),
         ),
         const SizedBox(height: 8),
         _LineRowAdaptive(

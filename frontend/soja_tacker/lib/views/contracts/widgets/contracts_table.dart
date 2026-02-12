@@ -79,14 +79,11 @@ class _ContractsTableState extends State<ContractsTable> {
   void didUpdateWidget(covariant ContractsTable oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // Atualiza snapshot anterior *depois* que renderizamos novos valores?
-    // Para flash funcionar bem, a gente mantém no cache o "antes"
-    // e só sobrescreve quando detecta que já comparou (feito dentro do FlashCell via prevValue).
-    // Aqui: apenas garante chaves existentes e remove contratos que sumiram.
+    // remove contratos que sumiram
     final idsNow = widget.rows.map((e) => e.contract.id).toSet();
     _prev.removeWhere((id, _) => !idsNow.contains(id));
 
-    // Garante que contratos novos entrem com valores atuais (sem flash inicial)
+    // adiciona novos contratos sem “flash inicial”
     for (final r in widget.rows) {
       final id = r.contract.id;
       _prev.putIfAbsent(id, () => _snapshotOf(r));
@@ -128,6 +125,9 @@ class _ContractsTableState extends State<ContractsTable> {
 
   @override
   Widget build(BuildContext context) {
+    // ✅ garante rebuild “controlado” quando quiser (ex: vm.updateTick)
+    final _ = widget.updateTick;
+
     final t = Theme.of(context);
     final cs = t.colorScheme;
 
@@ -199,6 +199,7 @@ class _ContractsTableState extends State<ContractsTable> {
     final isCompact = MediaQuery.of(context).size.width < 760;
 
     return Card(
+      key: ValueKey('contracts-table-${widget.updateTick ?? 0}'),
       elevation: 0,
       child: Container(
         decoration: BoxDecoration(
@@ -213,7 +214,7 @@ class _ContractsTableState extends State<ContractsTable> {
             // Header + Controls
             Row(
               children: [
-                _HeaderIcon(icon: Icons.table_chart_rounded),
+                const _HeaderIcon(icon: Icons.table_chart_rounded),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -239,6 +240,7 @@ class _ContractsTableState extends State<ContractsTable> {
                     showOnlyOpen: _showOnlyOpen,
                     onToggleOpen: (v) => setState(() => _showOnlyOpen = v),
                     onClear: () => setState(() => _searchCtrl.clear()),
+                    onSearchChanged: (_) => setState(() {}),
                   ),
                   const SizedBox(height: 10),
                   _SummaryPill(
@@ -252,12 +254,13 @@ class _ContractsTableState extends State<ContractsTable> {
                 showOnlyOpen: _showOnlyOpen,
                 onToggleOpen: (v) => setState(() => _showOnlyOpen = v),
                 onClear: () => setState(() => _searchCtrl.clear()),
+                onSearchChanged: (_) => setState(() {}),
               ),
 
             const SizedBox(height: 12),
 
             if (filtered.isEmpty)
-              _EmptyState(
+              const _EmptyState(
                 title: 'Nenhum contrato encontrado',
                 subtitle: 'Ajuste a busca ou desligue “Somente abertos”.',
               )
@@ -422,10 +425,7 @@ class _WideTable extends StatelessWidget {
               final prevSnap = prev[id];
               final nextSnap = snapOf(r);
 
-              // Após construir a linha, atualiza cache (próximo ciclo vira "antes")
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                commit(id, nextSnap);
-              });
+              WidgetsBinding.instance.addPostFrameCallback((_) => commit(id, nextSnap));
 
               return DataRow(
                 onSelectChanged: (_) => onAction(r, 'detalhar'),
@@ -436,7 +436,9 @@ class _WideTable extends StatelessWidget {
                   DataCell(
                     _FlashCell.text(
                       id: 'vol-$id',
-                      prevText: prevSnap == null ? null : '${AppFormatters.ton(prevSnap.ton, decimals: 0)} t / ${AppFormatters.sacas(prevSnap.sacas)} sc',
+                      prevText: prevSnap == null
+                          ? null
+                          : '${AppFormatters.ton(prevSnap.ton, decimals: 0)} t / ${AppFormatters.sacas(prevSnap.sacas)} sc',
                       text: '${AppFormatters.ton(r.totals.tonTotal, decimals: 0)} t / ${AppFormatters.sacas(r.totals.sacasTotal)} sc',
                     ),
                   ),
@@ -476,25 +478,26 @@ class _WideTable extends StatelessWidget {
                     ),
                   ),
 
+                  // ✅ agora dá pra clicar direto no lock também (além do menu)
                   DataCell(
-                    _FlashCell.lock(
-                      id: 'cbot-$id',
-                      prevPct: prevSnap?.cbotPct,
-                      ui: uiC,
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => onAction(r, 'travar_cbot'),
+                      child: _FlashCell.lock(id: 'cbot-$id', prevPct: prevSnap?.cbotPct, ui: uiC),
                     ),
                   ),
                   DataCell(
-                    _FlashCell.lock(
-                      id: 'prem-$id',
-                      prevPct: prevSnap?.premPct,
-                      ui: uiP,
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => onAction(r, 'travar_premio'),
+                      child: _FlashCell.lock(id: 'prem-$id', prevPct: prevSnap?.premPct, ui: uiP),
                     ),
                   ),
                   DataCell(
-                    _FlashCell.lock(
-                      id: 'fx-$id',
-                      prevPct: prevSnap?.fxPct,
-                      ui: uiF,
+                    InkWell(
+                      borderRadius: BorderRadius.circular(999),
+                      onTap: () => onAction(r, 'travar_fx'),
+                      child: _FlashCell.lock(id: 'fx-$id', prevPct: prevSnap?.fxPct, ui: uiF),
                     ),
                   ),
 
@@ -655,8 +658,22 @@ class _ContractTile extends StatelessWidget {
               children: [
                 _MiniPill(label: 'Volume', value: '${AppFormatters.ton(row.totals.tonTotal, decimals: 0)} t', id: 'vol-$id'),
                 _MiniPill(label: 'Sacas', value: '${AppFormatters.sacas(row.totals.sacasTotal)} sc', id: 'sac-$id'),
-                _MiniPill(label: 'USD/sc', value: AppFormatters.usd(usdSaca), id: 'usdsc-$id', prevNum: prevSnap?.usdSaca, num: (usdSaca ?? 0.0), fmt: AppFormatters.usd),
-                _MiniPill(label: 'BRL/sc', value: AppFormatters.brl(brlSaca), id: 'brlsc-$id', prevNum: prevSnap?.brlSaca, num: (brlSaca ?? 0.0), fmt: AppFormatters.brl),
+                _MiniPill(
+                  label: 'USD/sc',
+                  value: AppFormatters.usd(usdSaca),
+                  id: 'usdsc-$id',
+                  prevNum: prevSnap?.usdSaca,
+                  num: (usdSaca ?? 0.0),
+                  fmt: AppFormatters.usd,
+                ),
+                _MiniPill(
+                  label: 'BRL/sc',
+                  value: AppFormatters.brl(brlSaca),
+                  id: 'brlsc-$id',
+                  prevNum: prevSnap?.brlSaca,
+                  num: (brlSaca ?? 0.0),
+                  fmt: AppFormatters.brl,
+                ),
               ],
             ),
 
@@ -666,8 +683,22 @@ class _ContractTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _MiniPill(label: 'Total USD', value: AppFormatters.usd(totalUsd), id: 'tusd-$id', prevNum: prevSnap?.totalUsd, num: totalUsd, fmt: AppFormatters.usd),
-                _MiniPill(label: 'Total BRL', value: AppFormatters.brl(totalBrl), id: 'tbrl-$id', prevNum: prevSnap?.totalBrl, num: totalBrl, fmt: AppFormatters.brl),
+                _MiniPill(
+                  label: 'Total USD',
+                  value: AppFormatters.usd(totalUsd),
+                  id: 'tusd-$id',
+                  prevNum: prevSnap?.totalUsd,
+                  num: totalUsd,
+                  fmt: AppFormatters.usd,
+                ),
+                _MiniPill(
+                  label: 'Total BRL',
+                  value: AppFormatters.brl(totalBrl),
+                  id: 'tbrl-$id',
+                  prevNum: prevSnap?.totalBrl,
+                  num: totalBrl,
+                  fmt: AppFormatters.brl,
+                ),
               ],
             ),
 
@@ -677,9 +708,21 @@ class _ContractTile extends StatelessWidget {
               spacing: 12,
               runSpacing: 10,
               children: [
-                _FlashCell.lock(id: 'cbot-$id', prevPct: prevSnap?.cbotPct, ui: cbot),
-                _FlashCell.lock(id: 'prem-$id', prevPct: prevSnap?.premPct, ui: prem),
-                _FlashCell.lock(id: 'fx-$id', prevPct: prevSnap?.fxPct, ui: fx),
+                InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => onAction(row, 'travar_cbot'),
+                  child: _FlashCell.lock(id: 'cbot-$id', prevPct: prevSnap?.cbotPct, ui: cbot),
+                ),
+                InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => onAction(row, 'travar_premio'),
+                  child: _FlashCell.lock(id: 'prem-$id', prevPct: prevSnap?.premPct, ui: prem),
+                ),
+                InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: () => onAction(row, 'travar_fx'),
+                  child: _FlashCell.lock(id: 'fx-$id', prevPct: prevSnap?.fxPct, ui: fx),
+                ),
               ],
             ),
           ],
@@ -838,7 +881,7 @@ class _FlashCellState extends State<_FlashCell> {
       color: cs.onSurface.withValues(alpha: widget.emphasize ? 0.90 : 0.86),
     );
 
-    // LOCK pill renderizado como antes (mas com flash no container)
+    // LOCK pill
     if (widget.ui != null) {
       return AnimatedContainer(
         duration: const Duration(milliseconds: 160),
@@ -875,10 +918,7 @@ class _FlashCellState extends State<_FlashCell> {
         color: _flash,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: _AnimatedSwapText(
-        text: widget.text,
-        style: baseStyle,
-      ),
+      child: _AnimatedSwapText(text: widget.text, style: baseStyle),
     );
   }
 
@@ -909,10 +949,7 @@ class _AnimatedSwapText extends StatelessWidget {
   final String text;
   final TextStyle? style;
 
-  const _AnimatedSwapText({
-    required this.text,
-    required this.style,
-  });
+  const _AnimatedSwapText({required this.text, required this.style});
 
   @override
   Widget build(BuildContext context) {
@@ -921,15 +958,9 @@ class _AnimatedSwapText extends StatelessWidget {
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, anim) {
-        final slide = Tween<Offset>(
-          begin: const Offset(0, 0.14),
-          end: Offset.zero,
-        ).animate(anim);
+        final slide = Tween<Offset>(begin: const Offset(0, 0.14), end: Offset.zero).animate(anim);
         final fade = CurvedAnimation(parent: anim, curve: Curves.easeOut);
-        return FadeTransition(
-          opacity: fade,
-          child: SlideTransition(position: slide, child: child),
-        );
+        return FadeTransition(opacity: fade, child: SlideTransition(position: slide, child: child));
       },
       child: Text(
         text,
@@ -949,12 +980,14 @@ class _ControlsRow extends StatelessWidget {
   final bool showOnlyOpen;
   final ValueChanged<bool> onToggleOpen;
   final VoidCallback onClear;
+  final ValueChanged<String> onSearchChanged;
 
   const _ControlsRow({
     required this.searchCtrl,
     required this.showOnlyOpen,
     required this.onToggleOpen,
     required this.onClear,
+    required this.onSearchChanged,
   });
 
   @override
@@ -979,7 +1012,7 @@ class _ControlsRow extends StatelessWidget {
                       icon: const Icon(Icons.clear_rounded),
                     ),
             ),
-            onChanged: (_) => (context as Element).markNeedsBuild(),
+            onChanged: onSearchChanged,
           ),
         ),
         const SizedBox(width: 10),
@@ -991,61 +1024,6 @@ class _ControlsRow extends StatelessWidget {
           checkmarkColor: cs.primary.withValues(alpha: 0.90),
         ),
       ],
-    );
-  }
-}
-
-class LockPill extends StatelessWidget {
-  final LockStatusUi ui;
-  const LockPill({super.key, required this.ui});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = Theme.of(context);
-    final cs = t.colorScheme;
-
-    IconData icon;
-    Color tone;
-
-    switch (ui.state) {
-      case LockVisualState.locked:
-        icon = Icons.lock_rounded;
-        tone = cs.primary;
-        break;
-      case LockVisualState.partial:
-        icon = Icons.lock_clock_rounded;
-        tone = cs.secondary;
-        break;
-      case LockVisualState.open:
-        icon = Icons.lock_open_rounded;
-        tone = cs.tertiary;
-        break;
-    }
-
-    final bg = tone.withValues(alpha: 0.14);
-    final bd = tone.withValues(alpha: 0.30);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Color.alphaBlend(bg, cs.surface),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: bd),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: tone.withValues(alpha: 0.92)),
-          const SizedBox(width: 8),
-          Text(
-            '${ui.label} ${AppFormatters.pct(ui.coveragePct, decimals: 0)}',
-            style: t.textTheme.bodySmall?.copyWith(
-              fontWeight: FontWeight.w800,
-              color: cs.onSurface.withValues(alpha: 0.86),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1177,10 +1155,7 @@ class _EmptyState extends StatelessWidget {
   final String title;
   final String subtitle;
 
-  const _EmptyState({
-    required this.title,
-    required this.subtitle,
-  });
+  const _EmptyState({required this.title, required this.subtitle});
 
   @override
   Widget build(BuildContext context) {

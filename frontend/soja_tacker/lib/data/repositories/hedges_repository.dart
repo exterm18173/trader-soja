@@ -44,6 +44,21 @@ class HedgesRepository {
     }
   }
 
+  // ✅ DELETE CBOT
+  Future<void> deleteCbot({
+    required int farmId,
+    required int contractId,
+    required int hedgeId,
+  }) async {
+    try {
+      await api.dio.delete(
+        '/farms/$farmId/contracts/$contractId/hedges/cbot/$hedgeId',
+      );
+    } on Exception catch (e) {
+      throw _asApiException(e, fallback: 'Erro ao deletar hedge CBOT');
+    }
+  }
+
   // ---------- PREMIUM ----------
   Future<HedgePremiumRead> createPremium({
     required int farmId,
@@ -76,6 +91,21 @@ class HedgesRepository {
     }
   }
 
+  // ✅ DELETE PREMIUM
+  Future<void> deletePremium({
+    required int farmId,
+    required int contractId,
+    required int hedgeId,
+  }) async {
+    try {
+      await api.dio.delete(
+        '/farms/$farmId/contracts/$contractId/hedges/premium/$hedgeId',
+      );
+    } on Exception catch (e) {
+      throw _asApiException(e, fallback: 'Erro ao deletar hedge Premium');
+    }
+  }
+
   // ---------- FX ----------
   Future<HedgeFxRead> createFx({
     required int farmId,
@@ -105,6 +135,21 @@ class HedgesRepository {
       return list.map((e) => HedgeFxRead.fromJson(e as Map<String, dynamic>)).toList();
     } on Exception catch (e) {
       throw _asApiException(e, fallback: 'Erro ao listar hedges FX');
+    }
+  }
+
+  // ✅ DELETE FX
+  Future<void> deleteFx({
+    required int farmId,
+    required int contractId,
+    required int hedgeId,
+  }) async {
+    try {
+      await api.dio.delete(
+        '/farms/$farmId/contracts/$contractId/hedges/fx/$hedgeId',
+      );
+    } on Exception catch (e) {
+      throw _asApiException(e, fallback: 'Erro ao deletar hedge FX');
     }
   }
 

@@ -41,7 +41,6 @@ class _ValueDistributionCardState extends State<ValueDistributionCard> {
   void didUpdateWidget(covariant ValueDistributionCard oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // recalcula total "novo" (mesma lógica do build)
     final newTotal = _calcTotal(widget.rows);
 
     bool changed(double? a, double b) {
@@ -140,6 +139,51 @@ class _ValueDistributionCardState extends State<ValueDistributionCard> {
     final maxValue = shown.map((e) => e.value).fold<double>(0.0, (p, v) => math.max(p, v));
     final max = maxValue <= 0 ? 1.0 : maxValue;
 
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header
+        Row(
+          children: [
+            _HeaderIcon(icon: Icons.stacked_bar_chart_rounded),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Distribuição do Valor Total (BRL)',
+                style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+
+        _AnimatedSwapText(
+          text: 'Total: ${AppFormatters.brl(total)} • Itens: ${widget.rows.length}',
+          style: t.textTheme.bodySmall?.copyWith(
+            color: cs.onSurfaceVariant.withValues(alpha: 0.92),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        for (int i = 0; i < shown.length; i++) ...[
+          _BarRow(
+            label: shown[i].label,
+            value: shown[i].value,
+            max: max,
+            total: total <= 0 ? 1 : total,
+            color: Color.alphaBlend(
+              shown[i].color.withValues(alpha: 0.85),
+              cs.surface,
+            ),
+            rowKey: shown[i].label,
+          ),
+          if (i != shown.length - 1) const SizedBox(height: 12),
+        ],
+      ],
+    );
+
     return Card(
       elevation: 0,
       child: Container(
@@ -152,50 +196,27 @@ class _ValueDistributionCardState extends State<ValueDistributionCard> {
           children: [
             Padding(
               padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Header
-                  Row(
-                    children: [
-                      _HeaderIcon(icon: Icons.stacked_bar_chart_rounded),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Distribuição do Valor Total (BRL)',
-                          style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+              child: LayoutBuilder(
+                builder: (_, c) {
+                  // ✅ Mesmo padrão do LocksBreakdownCard:
+                  // se o pai (PageView/carrossel) limitar altura, ocupa e faz scroll interno.
+                  if (c.maxHeight.isFinite) {
+                    return SizedBox(
+                      height: c.maxHeight,
+                      child: ClipRect(
+                        child: SingleChildScrollView(
+                          primary: false,
+                          physics: const BouncingScrollPhysics(),
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(minHeight: c.maxHeight),
+                            child: content,
+                          ),
                         ),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-
-                  _AnimatedSwapText(
-                    text: 'Total: ${AppFormatters.brl(total)} • Itens: ${widget.rows.length}',
-                    style: t.textTheme.bodySmall?.copyWith(
-                      color: cs.onSurfaceVariant.withValues(alpha: 0.92),
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  for (int i = 0; i < shown.length; i++) ...[
-                    _BarRow(
-                      label: shown[i].label,
-                      value: shown[i].value,
-                      max: max,
-                      total: total <= 0 ? 1 : total,
-                      color: Color.alphaBlend(
-                        shown[i].color.withValues(alpha: 0.85),
-                        cs.surface,
-                      ),
-                      // ✅ chave estável p/ animar por item
-                      rowKey: shown[i].label,
-                    ),
-                    if (i != shown.length - 1) const SizedBox(height: 12),
-                  ],
-                ],
+                    );
+                  }
+                  return content;
+                },
               ),
             ),
 
@@ -262,7 +283,6 @@ class _BarRow extends StatelessWidget {
                 children: [
                   Positioned.fill(child: Container(color: barBg)),
 
-                  // ✅ anima largura da barra
                   Positioned.fill(
                     child: TweenAnimationBuilder<double>(
                       tween: Tween<double>(begin: 0, end: pct),
@@ -302,7 +322,6 @@ class _BarRow extends StatelessWidget {
           ),
         );
 
-        // ✅ valores animados
         final rightWidget = Row(
           mainAxisSize: MainAxisSize.min,
           children: [

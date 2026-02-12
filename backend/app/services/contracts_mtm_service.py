@@ -109,6 +109,42 @@ class _FxCurveSnap:
 
 
 class ContractsMtmService:
+    # =========================
+    # FIXO_BRL helpers
+    # =========================
+    def _frete_brl_total(self, c: Contract) -> float:
+        """Resolve frete total em BRL (se existir)."""
+        ft = _to_float(getattr(c, "frete_brl_total", None))
+        if ft is not None:
+            return float(ft)
+
+        fpt = _to_float(getattr(c, "frete_brl_per_ton", None))
+        if fpt is not None:
+            ton = float(c.volume_total_ton or 0.0)
+            return float(fpt) * ton
+
+        return 0.0
+
+    def _brl_fixo_per_saca(self, c: Contract) -> float | None:
+        """Preço fixo em BRL por saca. Espera normalmente BRL/sc."""
+        v = _to_float(getattr(c, "preco_fixo_brl_value", None))
+        u = (getattr(c, "preco_fixo_brl_unit", None) or "").strip().upper()
+        if v is None:
+            return None
+
+        if u in ("BRL/SC", "BRL/SACA", "BRL_SC"):
+            return float(v)
+
+        # suporte opcional se aparecer:
+        if u in ("BRL/TON", "BRL_TON"):
+            return float(v) / float(SACAS_PER_TON)
+
+        # fallback: assume por saca
+        return float(v)
+
+    # =========================
+    # Main
+    # =========================
     def contracts_mtm(
         self,
         db: Session,
@@ -151,17 +187,19 @@ class ContractsMtmService:
         refmes_needed: set[date] = set()
 
         for c in contracts:
+            # ✅ FIXO_BRL: não precisa de CBOT/FX/PREMIO
+            tipo = (getattr(c, "tipo_precificacao", None) or "").strip().upper()
+            if tipo == "FIXO_BRL":
+                continue
+
             hc = last_cbot.map.get(c.id)
 
-            # ✅ FX ref_mes agora também dia 30
             rm_fx = forced_ref_mes or _ref_mes_month(c.data_entrega)
             refmes_needed.add(rm_fx)
 
-            # ✅ CBOT ref_mes: hedge.ref_mes se existir; senão usa rm_fx
             rm_cbot = getattr(hc, "ref_mes", None) if hc else None
             rm_cbot = _ref_mes_month(rm_cbot) if rm_cbot else rm_fx
 
-            # ✅ símbolo: hedge.symbol > default_symbol; resolve AUTO
             symbol = (getattr(hc, "symbol", None) or default_symbol or "").strip()
             if symbol.upper() == "AUTO":
                 symbol = _auto_symbol_for_ref_mes(rm_cbot)
@@ -180,6 +218,78 @@ class ContractsMtmService:
             vol_total_ton = max(float(c.volume_total_ton or 0.0), 0.0)
             sacas_total = float(round(vol_total_ton * SACAS_PER_TON, 0))
 
+            tipo = (getattr(c, "tipo_precificacao", None) or "").strip().upper()
+
+            # -------------------------
+            # ✅ FIXO_BRL: retorna só BRL (nada de USD/CBOT/FX/PREMIO)
+            # -------------------------
+            if tipo == "FIXO_BRL":
+                brl_sc = self._brl_fixo_per_saca(c)
+                frete_total = self._frete_brl_total(c)
+
+                brl_total = None
+                if brl_sc is not None and sacas_total > 0:
+                    brl_total = (brl_sc * sacas_total) + frete_total
+
+                rows.append(
+                    ContractMtmRow(
+                        contract=ContractBrief.from_orm(c),
+                        locks=LocksInfo(
+                            cbot=LockCbot(
+                                locked=False,
+                                coverage_pct=0.0,
+                                locked_cents_per_bu=None,
+                                symbol=None,
+                                ref_mes=None,
+                            ),
+                            premium=LockPremium(
+                                locked=False,
+                                coverage_pct=0.0,
+                                premium_value=None,
+                                premium_unit=None,
+                            ),
+                            fx=LockFx(
+                                locked=False,
+                                coverage_pct=0.0,
+                                brl_per_usd=None,
+                                tipo=None,
+                                usd_amount=None,
+                            ),
+                        ),
+                        quotes=QuotesInfo(
+                            cbot_system=None,
+                            fx_system=None,
+                            fx_manual=None,
+                        ),
+                        valuation=Valuation(
+                            usd_per_saca=ValuationSide(system=None, manual=None),
+                            brl_per_saca=ValuationSide(
+                                system=self._r(brl_sc, 4),
+                                manual=None,
+                            ),
+                            components={},  # ✅ sem componentes USD
+                        ),
+                        totals=ContractTotals(
+                            ton_total=self._r(vol_total_ton, 4) or 0.0,
+                            sacas_total=self._r(sacas_total, 0) or 0.0,
+                            usd_total_contract=None,
+                            brl_total_contract=TotalsSide(
+                                system=self._r(brl_total, 4),
+                                manual=None,
+                            ),
+                            fx_locked_usd_used=TotalsSide(system=None, manual=None),
+                            fx_unlocked_usd_used=TotalsSide(system=None, manual=None),
+                            fx_lock_mode=TotalsModeSide(system="none", manual="none"),
+                            fx_locked_usd_pct=TotalsSide(system=None, manual=None),
+                            fx_unlocked_usd_pct=TotalsSide(system=None, manual=None),
+                        ),
+                    )
+                )
+                continue
+
+            # -------------------------
+            # MTM normal (CBOT/PREMIO/FX)
+            # -------------------------
             hc: HedgeCbot | None = last_cbot.map.get(c.id)
             hp: HedgePremium | None = last_prem.map.get(c.id)
             hf: HedgeFx | None = last_fx.map.get(c.id)
@@ -266,20 +376,20 @@ class ContractsMtmService:
             locks = LocksInfo(
                 cbot=LockCbot(
                     locked=hc is not None,
-                    coverage_pct=self._r(cbot_cov, 6),
+                    coverage_pct=self._r(cbot_cov, 6) or 0.0,
                     locked_cents_per_bu=self._r(locked_cents, 4),
                     symbol=symbol,
                     ref_mes=getattr(hc, "ref_mes", None) if hc else None,
                 ),
                 premium=LockPremium(
                     locked=hp is not None,
-                    coverage_pct=self._r(prem_cov, 6),
+                    coverage_pct=self._r(prem_cov, 6) or 0.0,
                     premium_value=self._r(_to_float(getattr(hp, "premium_value", None)), 6) if hp else None,
                     premium_unit=getattr(hp, "premium_unit", None) if hp else None,
                 ),
                 fx=LockFx(
                     locked=hf is not None,
-                    coverage_pct=self._r(fx_cov, 6),
+                    coverage_pct=self._r(fx_cov, 6) or 0.0,
                     brl_per_usd=self._r(_to_float(getattr(hf, "brl_per_usd", None)), 6) if hf else None,
                     tipo=getattr(hf, "tipo", None) if hf else None,
                     usd_amount=self._r(_to_float(getattr(hf, "usd_amount", None)), 4) if hf else None,
@@ -350,15 +460,42 @@ class ContractsMtmService:
                     manual=self._r(brl_per_saca_manual, 4) if mode in ("manual", "both") else None,
                 ),
                 components={
-                    "cbot_locked_usd_per_bu": UsedComponent(system=self._r(locked_usd_per_bu, 6), manual=self._r(locked_usd_per_bu, 6)),
-                    "cbot_live_usd_per_bu": UsedComponent(system=self._r(live_usd_per_bu, 6), manual=self._r(live_usd_per_bu, 6)),
-                    "cbot_effective_usd_per_bu": UsedComponent(system=self._r(cbot_effective, 6), manual=self._r(cbot_effective, 6)),
-                    "premium_locked_usd_per_bu": UsedComponent(system=self._r(prem_locked, 6), manual=self._r(prem_locked, 6)),
-                    "premium_effective_usd_per_bu": UsedComponent(system=self._r(prem_effective, 6), manual=self._r(prem_effective, 6)),
-                    "fx_locked_brl_per_usd": UsedComponent(system=self._r(fx_locked_rate, 6), manual=self._r(fx_locked_rate, 6)),
-                    "fx_locked_usd_amount": UsedComponent(system=self._r(fx_locked_usd_amount, 4), manual=self._r(fx_locked_usd_amount, 4)),
-                    "fx_live_brl_per_usd": UsedComponent(system=self._r(fx_sys_live, 6), manual=self._r(fx_man_live, 6)),
-                    "fx_effective_brl_per_usd": UsedComponent(system=self._r(fx_eff_system, 6), manual=self._r(fx_eff_manual, 6)),
+                    "cbot_locked_usd_per_bu": UsedComponent(
+                        system=self._r(locked_usd_per_bu, 6),
+                        manual=self._r(locked_usd_per_bu, 6),
+                    ),
+                    "cbot_live_usd_per_bu": UsedComponent(
+                        system=self._r(live_usd_per_bu, 6),
+                        manual=self._r(live_usd_per_bu, 6),
+                    ),
+                    "cbot_effective_usd_per_bu": UsedComponent(
+                        system=self._r(cbot_effective, 6),
+                        manual=self._r(cbot_effective, 6),
+                    ),
+                    "premium_locked_usd_per_bu": UsedComponent(
+                        system=self._r(prem_locked, 6),
+                        manual=self._r(prem_locked, 6),
+                    ),
+                    "premium_effective_usd_per_bu": UsedComponent(
+                        system=self._r(prem_effective, 6),
+                        manual=self._r(prem_effective, 6),
+                    ),
+                    "fx_locked_brl_per_usd": UsedComponent(
+                        system=self._r(fx_locked_rate, 6),
+                        manual=self._r(fx_locked_rate, 6),
+                    ),
+                    "fx_locked_usd_amount": UsedComponent(
+                        system=self._r(fx_locked_usd_amount, 4),
+                        manual=self._r(fx_locked_usd_amount, 4),
+                    ),
+                    "fx_live_brl_per_usd": UsedComponent(
+                        system=self._r(fx_sys_live, 6),
+                        manual=self._r(fx_man_live, 6),
+                    ),
+                    "fx_effective_brl_per_usd": UsedComponent(
+                        system=self._r(fx_eff_system, 6),
+                        manual=self._r(fx_eff_manual, 6),
+                    ),
                 },
             )
 
@@ -375,11 +512,23 @@ class ContractsMtmService:
                     system=self._r(brl_total_system, 4) if mode in ("system", "both") else None,
                     manual=self._r(brl_total_manual, 4) if mode in ("manual", "both") else None,
                 ),
-                fx_locked_usd_used=TotalsSide(system=self._r(lock_usd_sys, 4), manual=self._r(lock_usd_man, 4)),
-                fx_unlocked_usd_used=TotalsSide(system=self._r(unlock_usd_sys, 4), manual=self._r(unlock_usd_man, 4)),
+                fx_locked_usd_used=TotalsSide(
+                    system=self._r(lock_usd_sys, 4),
+                    manual=self._r(lock_usd_man, 4),
+                ),
+                fx_unlocked_usd_used=TotalsSide(
+                    system=self._r(unlock_usd_sys, 4),
+                    manual=self._r(unlock_usd_man, 4),
+                ),
                 fx_lock_mode=TotalsModeSide(system=mode_sys, manual=mode_man),
-                fx_locked_usd_pct=TotalsSide(system=self._r(lock_pct_sys, 6), manual=self._r(lock_pct_man, 6)),
-                fx_unlocked_usd_pct=TotalsSide(system=self._r(unlock_pct_sys, 6), manual=self._r(unlock_pct_man, 6)),
+                fx_locked_usd_pct=TotalsSide(
+                    system=self._r(lock_pct_sys, 6),
+                    manual=self._r(lock_pct_man, 6),
+                ),
+                fx_unlocked_usd_pct=TotalsSide(
+                    system=self._r(unlock_pct_sys, 6),
+                    manual=self._r(unlock_pct_man, 6),
+                ),
             )
 
             rows.append(
@@ -403,7 +552,15 @@ class ContractsMtmService:
     # =========================
     # FX breakdown (igual ao seu)
     # =========================
-    def _fx_brl_per_saca_with_breakdown(self, usd_per_saca, sacas_total, fx_locked_rate, fx_locked_usd_amount, fx_live_rate, fx_cov_fallback):
+    def _fx_brl_per_saca_with_breakdown(
+        self,
+        usd_per_saca,
+        sacas_total,
+        fx_locked_rate,
+        fx_locked_usd_amount,
+        fx_live_rate,
+        fx_cov_fallback,
+    ):
         if usd_per_saca is None or sacas_total <= 0:
             return (None, None, None, "none")
 

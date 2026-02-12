@@ -129,8 +129,13 @@ class TraderSojaApp extends StatelessWidget {
           create: (_) => ExpensesUsdVM(expensesUsdRepo, farmContext),
         ),
         ChangeNotifierProvider(
-          create: (_) => HedgesVM(hedgesRepo, farmContext),
+          create: (ctx) => HedgesVM(
+            ctx.read<HedgesRepository>(),
+            ctx.read<ContractsRepository>(),
+            ctx.read<FarmContext>(),
+          ),
         ),
+
         ChangeNotifierProvider(
           create: (_) => ContractsVM(contractsRepo, farmContext),
         ),

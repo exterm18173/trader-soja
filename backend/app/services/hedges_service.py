@@ -108,6 +108,85 @@ class HedgesService:
                 ),
             )
 
+    # ---------- FX auto-ajuste (para deletes de CBOT/Prêmio) ----------
+    def _fx_rows_desc(self, db: Session, contract_id: int) -> list[HedgeFx]:
+        """Últimos FX primeiro (remove/ajusta do fim para trás)."""
+        return (
+            db.query(HedgeFx)
+            .filter(HedgeFx.contract_id == contract_id)
+            .order_by(HedgeFx.executado_em.desc(), HedgeFx.id.desc())
+            .all()
+        )
+
+    def _auto_trim_fx_to_usd_formed(self, db: Session, contract_id: int) -> dict:
+        """
+        Garante: sum_fx_ton <= min(sum_cbot_ton, sum_premium_ton)
+
+        Estratégia:
+        - calcula usd_formed
+        - se FX exceder, remove FX do fim para o começo
+        - se precisar remover parcialmente o último FX, reduz volume_ton e ajusta usd_amount proporcionalmente
+        Retorna um resumo (útil para log/debug).
+        """
+        cbot_ton = self._sum_cbot_ton(db, contract_id)
+        prem_ton = self._sum_premium_ton(db, contract_id)
+        usd_formed = min(cbot_ton, prem_ton)
+
+        fx_total = self._sum_fx_ton(db, contract_id)
+        excess = fx_total - usd_formed
+
+        summary = {
+            "usd_formed_ton": float(usd_formed),
+            "fx_before_ton": float(fx_total),
+            "fx_after_ton": float(fx_total),
+            "deleted_fx_ids": [],
+            "trimmed_fx": None,  # {"id":..., "from_ton":..., "to_ton":..., "usd_amount_from":..., "usd_amount_to":...}
+        }
+
+        if excess <= 1e-9:
+            return summary
+
+        rows = self._fx_rows_desc(db, contract_id)
+
+        for fx in rows:
+            if excess <= 1e-9:
+                break
+
+            fx_ton = float(fx.volume_ton)
+
+            # remove inteiro
+            if fx_ton <= excess + 1e-9:
+                summary["deleted_fx_ids"].append(int(fx.id))
+                excess -= fx_ton
+                db.delete(fx)
+                continue
+
+            # remove parcial (reduz volume_ton) e ajusta usd_amount proporcionalmente
+            new_ton = fx_ton - excess
+            if new_ton < 0:
+                new_ton = 0.0
+
+            usd_from = float(fx.usd_amount)
+            ratio = (new_ton / fx_ton) if fx_ton > 0 else 0.0
+            usd_to = usd_from * ratio
+
+            summary["trimmed_fx"] = {
+                "id": int(fx.id),
+                "from_ton": fx_ton,
+                "to_ton": float(new_ton),
+                "usd_amount_from": usd_from,
+                "usd_amount_to": float(usd_to),
+            }
+
+            fx.volume_ton = new_ton
+            fx.usd_amount = usd_to
+            # brl_per_usd permanece igual
+            excess = 0.0
+
+        db.flush()
+        summary["fx_after_ton"] = float(self._sum_fx_ton(db, contract_id))
+        return summary
+
     # ---------- Creates ----------
     def create_cbot(self, db: Session, farm_id: int, contract_id: int, user_id: int, payload) -> HedgeCbot:
         c = self._get_contract(db, farm_id, contract_id)
@@ -169,8 +248,7 @@ class HedgesService:
         self._require_remaining("dólar", float(c.volume_total_ton), locked_fx, add_ton)
 
         # 2) regra do fluxo: FX só trava volume que já tem USD formado (CBOT+Premium)
-        #    (se não for CBOT_PREMIO, você pode escolher: permitir ou bloquear.
-        #     aqui, para não atrapalhar FIXO_BRL, só aplica a regra quando CBOT_PREMIO)
+        #    (para FIXO_BRL, não aplica)
         if (c.tipo_precificacao or "").strip().upper() == "CBOT_PREMIO":
             self._require_fx_usd_formed(db, c.id, add_ton)
 
@@ -220,3 +298,71 @@ class HedgesService:
             .order_by(HedgeFx.executado_em.asc(), HedgeFx.id.asc())
             .all()
         )
+
+    # ---------- Deletes ----------
+    def delete_cbot(self, db: Session, farm_id: int, contract_id: int, hedge_id: int, user_id: int) -> None:
+        c = self._get_contract(db, farm_id, contract_id)
+        self._require_cbot_premio(c, "CBOT")
+
+        h = (
+            db.query(HedgeCbot)
+            .join(Contract, Contract.id == HedgeCbot.contract_id)
+            .filter(
+                Contract.farm_id == farm_id,
+                HedgeCbot.contract_id == contract_id,
+                HedgeCbot.id == hedge_id,
+            )
+            .first()
+        )
+        if not h:
+            raise HTTPException(status_code=404, detail="Hedge CBOT não encontrado")
+
+        db.delete(h)
+
+        # ✅ Ajusta FX automaticamente (remove/trim excedente)
+        self._auto_trim_fx_to_usd_formed(db, contract_id)
+
+        db.commit()
+
+    def delete_premium(self, db: Session, farm_id: int, contract_id: int, hedge_id: int, user_id: int) -> None:
+        c = self._get_contract(db, farm_id, contract_id)
+        self._require_cbot_premio(c, "prêmio")
+
+        h = (
+            db.query(HedgePremium)
+            .join(Contract, Contract.id == HedgePremium.contract_id)
+            .filter(
+                Contract.farm_id == farm_id,
+                HedgePremium.contract_id == contract_id,
+                HedgePremium.id == hedge_id,
+            )
+            .first()
+        )
+        if not h:
+            raise HTTPException(status_code=404, detail="Hedge Prêmio não encontrado")
+
+        db.delete(h)
+
+        # ✅ Ajusta FX automaticamente (remove/trim excedente)
+        self._auto_trim_fx_to_usd_formed(db, contract_id)
+
+        db.commit()
+
+    def delete_fx(self, db: Session, farm_id: int, contract_id: int, hedge_id: int, user_id: int) -> None:
+        self._get_contract(db, farm_id, contract_id)
+
+        h = (
+            db.query(HedgeFx)
+            .join(Contract, Contract.id == HedgeFx.contract_id)
+            .filter(
+                Contract.farm_id == farm_id,
+                HedgeFx.contract_id == contract_id,
+                HedgeFx.id == hedge_id,
+            )
+            .first()
+        )
+        if not h:
+            raise HTTPException(status_code=404, detail="Hedge FX não encontrado")
+
+        db.delete(h)
+        db.commit()

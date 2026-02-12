@@ -1,5 +1,5 @@
 # app/api/routers/hedges.py
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, Response
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_farm_membership_from_path
@@ -38,6 +38,20 @@ def list_cbot(
     return service.list_cbot(db, farm_id, contract_id)
 
 
+# ✅ DELETE CBOT
+@router.delete("/cbot/{hedge_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_cbot(
+    farm_id: int,
+    contract_id: int,
+    hedge_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    membership=Depends(get_farm_membership_from_path),
+):
+    service.delete_cbot(db, farm_id, contract_id, hedge_id, user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/premium", response_model=HedgePremiumRead, status_code=status.HTTP_201_CREATED)
 def create_premium(
     farm_id: int,
@@ -60,6 +74,20 @@ def list_premium(
     return service.list_premium(db, farm_id, contract_id)
 
 
+# ✅ DELETE PREMIUM
+@router.delete("/premium/{hedge_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_premium(
+    farm_id: int,
+    contract_id: int,
+    hedge_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    membership=Depends(get_farm_membership_from_path),
+):
+    service.delete_premium(db, farm_id, contract_id, hedge_id, user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/fx", response_model=HedgeFxRead, status_code=status.HTTP_201_CREATED)
 def create_fx(
     farm_id: int,
@@ -80,3 +108,17 @@ def list_fx(
     membership=Depends(get_farm_membership_from_path),
 ):
     return service.list_fx(db, farm_id, contract_id)
+
+
+# ✅ DELETE FX
+@router.delete("/fx/{hedge_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_fx(
+    farm_id: int,
+    contract_id: int,
+    hedge_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    membership=Depends(get_farm_membership_from_path),
+):
+    service.delete_fx(db, farm_id, contract_id, hedge_id, user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
