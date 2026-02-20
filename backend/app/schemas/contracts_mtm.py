@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
+
 from pydantic import BaseModel
+
+LockState = Literal["locked", "open"]
+LockType = Literal["cbot", "premium", "fx"]
 
 
 class ContractBrief(BaseModel):
     id: int
     produto: str
-    tipo_precificacao: str
+    tipo_precificacao: str  # mude pra str | None se no banco puder ser NULL
     data_entrega: date
     status: str
     volume_total_ton: float
@@ -63,14 +68,16 @@ class CbotQuoteBrief(BaseModel):
 
 
 class FxQuoteBrief(BaseModel):
-    capturado_em: datetime
+    # ✅ precisa aceitar None (service pode mandar None em alguns cenários)
+    capturado_em: datetime | None = None
     ref_mes: date
     brl_per_usd: float
     source: str
 
 
 class FxManualBrief(BaseModel):
-    captured_at: datetime
+    # ✅ precisa aceitar None (por segurança)
+    captured_at: datetime | None = None
     ref_mes: date
     brl_per_usd: float
     source: str = "manual"
@@ -98,13 +105,11 @@ class Valuation(BaseModel):
     components: dict[str, UsedComponent]
 
 
-# ✅ Totais (numéricos)
 class TotalsSide(BaseModel):
     system: float | None = None
     manual: float | None = None
 
 
-# ✅ Totais (strings, ex mode)
 class TotalsModeSide(BaseModel):
     system: str
     manual: str
@@ -125,6 +130,38 @@ class ContractTotals(BaseModel):
     fx_unlocked_usd_pct: TotalsSide
 
 
+class RowFilterMeta(BaseModel):
+    lock_types: list[LockType] = []
+    lock_states: list[LockState] = []
+
+    state_cbot: LockState
+    state_premium: LockState
+    state_fx: LockState
+
+    pct_cbot: float
+    pct_premium: float
+    pct_fx: float
+
+    locked_pct: float   # min(pcts)
+    open_pct: float     # 1 - max(pcts)
+
+    slice_pct: float
+
+
+class ContractTotalsView(BaseModel):
+    ton_total: float
+    sacas_total: float
+
+    usd_total_contract: float | None = None
+    brl_total_contract: TotalsSide
+
+    fx_locked_usd_used: TotalsSide
+    fx_unlocked_usd_used: TotalsSide
+
+    fx_locked_usd_pct: TotalsSide
+    fx_unlocked_usd_pct: TotalsSide
+
+
 class ContractMtmRow(BaseModel):
     contract: ContractBrief
     locks: LocksInfo
@@ -132,10 +169,17 @@ class ContractMtmRow(BaseModel):
     valuation: Valuation
     totals: ContractTotals
 
+    totals_view: ContractTotalsView | None = None
+    filter_meta: RowFilterMeta | None = None
+
 
 class ContractsMtmResponse(BaseModel):
     farm_id: int
     as_of_ts: datetime
     mode: str
     fx_ref_mes: date | None = None
+
+    # ✅ opcional, mas ajuda o front a refletir o estado do filtro
+    no_locks: bool = False
+
     rows: list[ContractMtmRow]

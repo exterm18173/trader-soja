@@ -1,4 +1,5 @@
 // lib/views/contracts_mtm_dashboard/widgets/contracts_table.dart
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -8,12 +9,15 @@ import '../../../data/models/contracts_mtm/contracts_mtm_response.dart';
 
 typedef OnContractAction = void Function(ContractMtmRow row, String action);
 
+/// Sorting só para a tabela MTM (com travas).
 enum ContractsSortColumn {
   contractId,
   entrega,
   volumeTon,
+  freteBrl,
   usdSaca,
   brlSaca,
+  fxUsed,
   totalUsd,
   totalBrl,
 }
@@ -34,6 +38,9 @@ class ContractsTable extends StatefulWidget {
   final double Function(ContractMtmRow r) brlOf;
   final double Function(ContractMtmRow r) usdOf;
 
+  /// ✅ usado para decidir qual lado (manual/system) mostrar dentro da célula FX usado
+  final DashboardViewSide viewSide;
+
   final TableSort initialSort;
   final OnContractAction onAction;
 
@@ -48,6 +55,7 @@ class ContractsTable extends StatefulWidget {
     required this.fxUi,
     required this.brlOf,
     required this.usdOf,
+    required this.viewSide,
     required this.initialSort,
     required this.onAction,
     this.updateTick,
@@ -79,11 +87,9 @@ class _ContractsTableState extends State<ContractsTable> {
   void didUpdateWidget(covariant ContractsTable oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // remove contratos que sumiram
     final idsNow = widget.rows.map((e) => e.contract.id).toSet();
     _prev.removeWhere((id, _) => !idsNow.contains(id));
 
-    // adiciona novos contratos sem “flash inicial”
     for (final r in widget.rows) {
       final id = r.contract.id;
       _prev.putIfAbsent(id, () => _snapshotOf(r));
@@ -97,8 +103,10 @@ class _ContractsTableState extends State<ContractsTable> {
   }
 
   _RowSnapshot _snapshotOf(ContractMtmRow r) {
-    final usdSaca = (r.valuation.usdPerSaca.manual ?? r.valuation.usdPerSaca.system ?? 0.0);
-    final brlSaca = (r.valuation.brlPerSaca.manual ?? r.valuation.brlPerSaca.system ?? 0.0);
+    final usdSaca =
+        (r.valuation.usdPerSaca.manual ?? r.valuation.usdPerSaca.system ?? 0.0);
+    final brlSaca =
+        (r.valuation.brlPerSaca.manual ?? r.valuation.brlPerSaca.system ?? 0.0);
 
     return _RowSnapshot(
       ton: r.totals.tonTotal,
@@ -107,9 +115,11 @@ class _ContractsTableState extends State<ContractsTable> {
       brlSaca: brlSaca,
       totalUsd: widget.usdOf(r),
       totalBrl: widget.brlOf(r),
+      freteBrl: _freteTotalBrl(r),
       cbotPct: widget.cbotUi(r).coveragePct,
       premPct: widget.premUi(r).coveragePct,
       fxPct: widget.fxUi(r).coveragePct,
+      fxUsed: _fxUsedRate(r, widget.viewSide) ?? 0.0,
     );
   }
 
@@ -121,6 +131,11 @@ class _ContractsTableState extends State<ContractsTable> {
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  bool _isFixoBrl(ContractMtmRow r) {
+    final t = (r.contract.tipoPrecificacao).trim().toUpperCase();
+    return t == 'FIXO_BRL';
   }
 
   @override
@@ -142,19 +157,36 @@ class _ContractsTableState extends State<ContractsTable> {
       final c = r.contract;
       final entrega = df.format(c.dataEntrega).toLowerCase();
       final id = c.id.toString();
-      return id.contains(q) || entrega.contains(q) || ('#$id').contains(q);
+      final tp = c.tipoPrecificacao.toLowerCase();
+      return id.contains(q) ||
+          entrega.contains(q) ||
+          ('#$id').contains(q) ||
+          tp.contains(q);
     }
 
+    // “Somente abertos”: aqui vou manter a sua regra (baseada em FX < 1) para MTM,
+    // e para FIXO_BRL vou usar status == ABERTO.
     bool matchesOpenOnly(ContractMtmRow r) {
       if (!_showOnlyOpen) return true;
+
+      if (_isFixoBrl(r)) {
+        return (r.contract.status).toUpperCase() == 'ABERTO';
+      }
+
       final fx = widget.fxUi(r);
       return (fx.coveragePct.isFinite ? fx.coveragePct : 0.0) < 1.0;
     }
 
-    final filtered = widget.rows.where((r) => matchesQuery(r) && matchesOpenOnly(r)).toList();
+    final filteredAll = widget.rows
+        .where((r) => matchesQuery(r) && matchesOpenOnly(r))
+        .toList();
 
-    // --- Sort ---
-    filtered.sort((a, b) {
+    // split: MTM vs FIXO_BRL
+    final mtm = filteredAll.where((r) => !_isFixoBrl(r)).toList();
+    final fixo = filteredAll.where(_isFixoBrl).toList();
+
+    // --- Sort (só MTM) ---
+    mtm.sort((a, b) {
       int cmp;
       switch (_sortCol) {
         case ContractsSortColumn.contractId:
@@ -166,15 +198,35 @@ class _ContractsTableState extends State<ContractsTable> {
         case ContractsSortColumn.volumeTon:
           cmp = a.totals.tonTotal.compareTo(b.totals.tonTotal);
           break;
+        case ContractsSortColumn.freteBrl:
+          cmp = _freteTotalBrl(a).compareTo(_freteTotalBrl(b));
+          break;
         case ContractsSortColumn.usdSaca:
-          final au = (a.valuation.usdPerSaca.manual ?? a.valuation.usdPerSaca.system ?? 0.0);
-          final bu = (b.valuation.usdPerSaca.manual ?? b.valuation.usdPerSaca.system ?? 0.0);
+          final au =
+              (a.valuation.usdPerSaca.manual ??
+              a.valuation.usdPerSaca.system ??
+              0.0);
+          final bu =
+              (b.valuation.usdPerSaca.manual ??
+              b.valuation.usdPerSaca.system ??
+              0.0);
           cmp = au.compareTo(bu);
           break;
         case ContractsSortColumn.brlSaca:
-          final ab = (a.valuation.brlPerSaca.manual ?? a.valuation.brlPerSaca.system ?? 0.0);
-          final bb = (b.valuation.brlPerSaca.manual ?? b.valuation.brlPerSaca.system ?? 0.0);
+          final ab =
+              (a.valuation.brlPerSaca.manual ??
+              a.valuation.brlPerSaca.system ??
+              0.0);
+          final bb =
+              (b.valuation.brlPerSaca.manual ??
+              b.valuation.brlPerSaca.system ??
+              0.0);
           cmp = ab.compareTo(bb);
+          break;
+        case ContractsSortColumn.fxUsed:
+          final ax = _fxUsedRate(a, widget.viewSide) ?? 0.0;
+          final bx = _fxUsedRate(b, widget.viewSide) ?? 0.0;
+          cmp = ax.compareTo(bx);
           break;
         case ContractsSortColumn.totalUsd:
           cmp = widget.usdOf(a).compareTo(widget.usdOf(b));
@@ -186,12 +238,17 @@ class _ContractsTableState extends State<ContractsTable> {
       return _asc ? cmp : -cmp;
     });
 
-    // --- Summary ---
-    final totalUsd = filtered.fold<double>(
+    // FIXO: sort simples por entrega desc (mais recente primeiro)
+    fixo.sort(
+      (a, b) => b.contract.dataEntrega.compareTo(a.contract.dataEntrega),
+    );
+
+    // --- Summary (geral: soma das duas) ---
+    final totalUsd = filteredAll.fold<double>(
       0.0,
       (p, r) => p + ((widget.usdOf(r).isFinite) ? widget.usdOf(r) : 0.0),
     );
-    final totalBrl = filtered.fold<double>(
+    final totalBrl = filteredAll.fold<double>(
       0.0,
       (p, r) => p + ((widget.brlOf(r).isFinite) ? widget.brlOf(r) : 0.0),
     );
@@ -219,12 +276,15 @@ class _ContractsTableState extends State<ContractsTable> {
                 Expanded(
                   child: Text(
                     'Contratos',
-                    style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                    style: t.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 if (!isCompact)
                   _SummaryPill(
-                    text: '${filtered.length} itens • ${AppFormatters.usd(totalUsd)} • ${AppFormatters.brl(totalBrl)}',
+                    text:
+                        '${filteredAll.length} itens • ${AppFormatters.usd(totalUsd)} • ${AppFormatters.brl(totalBrl)}',
                   ),
               ],
             ),
@@ -244,7 +304,8 @@ class _ContractsTableState extends State<ContractsTable> {
                   ),
                   const SizedBox(height: 10),
                   _SummaryPill(
-                    text: '${filtered.length} itens • ${AppFormatters.usd(totalUsd)} • ${AppFormatters.brl(totalBrl)}',
+                    text:
+                        '${filteredAll.length} itens • ${AppFormatters.usd(totalUsd)} • ${AppFormatters.brl(totalBrl)}',
                   ),
                 ],
               )
@@ -257,52 +318,101 @@ class _ContractsTableState extends State<ContractsTable> {
                 onSearchChanged: (_) => setState(() {}),
               ),
 
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
 
-            if (filtered.isEmpty)
+            if (filteredAll.isEmpty)
               const _EmptyState(
                 title: 'Nenhum contrato encontrado',
                 subtitle: 'Ajuste a busca ou desligue “Somente abertos”.',
               )
-            else
-              isCompact
-                  ? _CompactList(
-                      rows: filtered,
-                      df: df,
-                      cbotUi: widget.cbotUi,
-                      premUi: widget.premUi,
-                      fxUi: widget.fxUi,
-                      brlOf: widget.brlOf,
-                      usdOf: widget.usdOf,
-                      onAction: widget.onAction,
-                      prev: _prev,
-                      commit: _commitSnapshot,
-                      snapOf: _snapshotOf,
-                    )
-                  : _WideTable(
-                      rows: filtered,
-                      df: df,
-                      asc: _asc,
-                      sortCol: _sortCol,
-                      onSort: (c) => _setSort(c),
-                      colIndex: _colIndex,
-                      cbotUi: widget.cbotUi,
-                      premUi: widget.premUi,
-                      fxUi: widget.fxUi,
-                      brlOf: widget.brlOf,
-                      usdOf: widget.usdOf,
-                      onAction: widget.onAction,
-                      prev: _prev,
-                      commit: _commitSnapshot,
-                      snapOf: _snapshotOf,
-                    ),
+            else ...[
+              // ========================
+              // MTM (com travas)
+              // ========================
+              _SectionHeader(
+                title: 'Contratos MTM (com travas)',
+                subtitle: '${mtm.length} itens',
+                icon: Icons.lock_outline_rounded,
+              ),
+              const SizedBox(height: 10),
+              if (mtm.isEmpty)
+                const _EmptyInline(text: 'Nenhum contrato MTM nesta seleção.')
+              else
+                isCompact
+                    ? _CompactListMtm(
+                        rows: mtm,
+                        df: df,
+                        viewSide: widget.viewSide,
+                        cbotUi: widget.cbotUi,
+                        premUi: widget.premUi,
+                        fxUi: widget.fxUi,
+                        brlOf: widget.brlOf,
+                        usdOf: widget.usdOf,
+                        onAction: widget.onAction,
+                        prev: _prev,
+                        commit: _commitSnapshot,
+                        snapOf: _snapshotOf,
+                      )
+                    : _WideTableMtm(
+                        rows: mtm,
+                        df: df,
+                        viewSide: widget.viewSide,
+                        asc: _asc,
+                        sortCol: _sortCol,
+                        onSort: (c) => _setSort(c),
+                        colIndex: _colIndexMtm,
+                        cbotUi: widget.cbotUi,
+                        premUi: widget.premUi,
+                        fxUi: widget.fxUi,
+                        brlOf: widget.brlOf,
+                        usdOf: widget.usdOf,
+                        onAction: widget.onAction,
+                        prev: _prev,
+                        commit: _commitSnapshot,
+                        snapOf: _snapshotOf,
+                      ),
+
+              const SizedBox(height: 18),
+
+              // ========================
+              // FIXO BRL (sem travas)
+              // ========================
+              _SectionHeader(
+                title: 'Contratos FIXO BRL (sem travas)',
+                subtitle: '${fixo.length} itens',
+                icon: Icons.payments_outlined,
+              ),
+              const SizedBox(height: 10),
+              if (fixo.isEmpty)
+                const _EmptyInline(text: 'Nenhum FIXO BRL nesta seleção.')
+              else
+                isCompact
+                    ? _CompactListFixo(
+                        rows: fixo,
+                        df: df,
+                        onAction: widget.onAction,
+                        prev: _prev,
+                        commit: _commitSnapshot,
+                        snapOf: _snapshotOf,
+                      )
+                    : _WideTableFixo(
+                        rows: fixo,
+                        df: df,
+                        onAction: widget.onAction,
+                        prev: _prev,
+                        commit: _commitSnapshot,
+                        snapOf: _snapshotOf,
+                      ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  int _colIndex(ContractsSortColumn c) {
+  int _colIndexMtm(ContractsSortColumn c) {
+    // colunas da _WideTableMtm na ordem
+    // 0 Contrato, 1 Entrega, 2 Volume, 3 Frete, 4 USD/sc, 5 BRL/sc, 6 FX usado, 7 Total USD, 8 Total BRL, 9 CBOT, 10 Prêmio, 11 FX, 12 Ações
     switch (c) {
       case ContractsSortColumn.contractId:
         return 0;
@@ -310,14 +420,18 @@ class _ContractsTableState extends State<ContractsTable> {
         return 1;
       case ContractsSortColumn.volumeTon:
         return 2;
-      case ContractsSortColumn.usdSaca:
+      case ContractsSortColumn.freteBrl:
         return 3;
-      case ContractsSortColumn.brlSaca:
+      case ContractsSortColumn.usdSaca:
         return 4;
-      case ContractsSortColumn.totalUsd:
+      case ContractsSortColumn.brlSaca:
         return 5;
-      case ContractsSortColumn.totalBrl:
+      case ContractsSortColumn.fxUsed:
         return 6;
+      case ContractsSortColumn.totalUsd:
+        return 7;
+      case ContractsSortColumn.totalBrl:
+        return 8;
     }
   }
 
@@ -333,11 +447,14 @@ class _ContractsTableState extends State<ContractsTable> {
   }
 }
 
-// ---------------- WIDE TABLE ----------------
-
-class _WideTable extends StatelessWidget {
+/// ======================================================
+/// MTM WIDE TABLE
+/// ======================================================
+class _WideTableMtm extends StatelessWidget {
   final List<ContractMtmRow> rows;
   final DateFormat df;
+
+  final DashboardViewSide viewSide;
 
   final bool asc;
   final ContractsSortColumn sortCol;
@@ -357,9 +474,10 @@ class _WideTable extends StatelessWidget {
   final void Function(int id, _RowSnapshot next) commit;
   final _RowSnapshot Function(ContractMtmRow r) snapOf;
 
-  const _WideTable({
+  const _WideTableMtm({
     required this.rows,
     required this.df,
+    required this.viewSide,
     required this.asc,
     required this.sortCol,
     required this.onSort,
@@ -392,20 +510,57 @@ class _WideTable extends StatelessWidget {
             sortColumnIndex: colIndex(sortCol),
             headingRowHeight: 46,
             dataRowMinHeight: 46,
+            dataRowMaxHeight: 60,
             columnSpacing: 22,
             horizontalMargin: 12,
             headingTextStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: cs.onSurface.withValues(alpha: 0.85),
-                ),
+              fontWeight: FontWeight.w900,
+              color: cs.onSurface.withValues(alpha: 0.85),
+            ),
             columns: [
-              DataColumn(label: const Text('Contrato'), onSort: (_, __) => onSort(ContractsSortColumn.contractId)),
-              DataColumn(label: const Text('Entrega'), onSort: (_, __) => onSort(ContractsSortColumn.entrega)),
-              DataColumn(label: const Text('Volume'), numeric: true, onSort: (_, __) => onSort(ContractsSortColumn.volumeTon)),
-              DataColumn(label: const Text('USD / Saca'), numeric: true, onSort: (_, __) => onSort(ContractsSortColumn.usdSaca)),
-              DataColumn(label: const Text('BRL / Saca'), numeric: true, onSort: (_, __) => onSort(ContractsSortColumn.brlSaca)),
-              DataColumn(label: const Text('Total USD'), numeric: true, onSort: (_, __) => onSort(ContractsSortColumn.totalUsd)),
-              DataColumn(label: const Text('Total BRL'), numeric: true, onSort: (_, __) => onSort(ContractsSortColumn.totalBrl)),
+              DataColumn(
+                label: const Text('Contrato'),
+                onSort: (_, __) => onSort(ContractsSortColumn.contractId),
+              ),
+              DataColumn(
+                label: const Text('Entrega'),
+                onSort: (_, __) => onSort(ContractsSortColumn.entrega),
+              ),
+              DataColumn(
+                label: const Text('Volume'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.volumeTon),
+              ),
+              DataColumn(
+                label: const Text('Frete'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.freteBrl),
+              ),
+              DataColumn(
+                label: const Text('USD / Saca'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.usdSaca),
+              ),
+              DataColumn(
+                label: const Text('BRL / Saca'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.brlSaca),
+              ),
+              DataColumn(
+                label: const Text('FX usado'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.fxUsed),
+              ),
+              DataColumn(
+                label: const Text('Total USD'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.totalUsd),
+              ),
+              DataColumn(
+                label: const Text('Total BRL'),
+                numeric: true,
+                onSort: (_, __) => onSort(ContractsSortColumn.totalBrl),
+              ),
               const DataColumn(label: Text('CBOT')),
               const DataColumn(label: Text('Prêmio')),
               const DataColumn(label: Text('FX')),
@@ -415,8 +570,12 @@ class _WideTable extends StatelessWidget {
               final c = r.contract;
               final id = c.id;
 
-              final usdSaca = r.valuation.usdPerSaca.manual ?? r.valuation.usdPerSaca.system;
-              final brlSaca = r.valuation.brlPerSaca.manual ?? r.valuation.brlPerSaca.system;
+              final usdSaca =
+                  r.valuation.usdPerSaca.manual ??
+                  r.valuation.usdPerSaca.system;
+              final brlSaca =
+                  r.valuation.brlPerSaca.manual ??
+                  r.valuation.brlPerSaca.system;
 
               final uiC = cbotUi(r);
               final uiP = premUi(r);
@@ -425,7 +584,11 @@ class _WideTable extends StatelessWidget {
               final prevSnap = prev[id];
               final nextSnap = snapOf(r);
 
-              WidgetsBinding.instance.addPostFrameCallback((_) => commit(id, nextSnap));
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => commit(id, nextSnap),
+              );
+
+              final frete = _freteTotalBrl(r);
 
               return DataRow(
                 onSelectChanged: (_) => onAction(r, 'detalhar'),
@@ -439,7 +602,17 @@ class _WideTable extends StatelessWidget {
                       prevText: prevSnap == null
                           ? null
                           : '${AppFormatters.ton(prevSnap.ton, decimals: 0)} t / ${AppFormatters.sacas(prevSnap.sacas)} sc',
-                      text: '${AppFormatters.ton(r.totals.tonTotal, decimals: 0)} t / ${AppFormatters.sacas(r.totals.sacasTotal)} sc',
+                      text:
+                          '${AppFormatters.ton(r.totals.tonTotal, decimals: 0)} t / ${AppFormatters.sacas(r.totals.sacasTotal)} sc',
+                    ),
+                  ),
+
+                  DataCell(
+                    _FlashCell.num(
+                      id: 'frete-$id',
+                      prev: prevSnap?.freteBrl,
+                      value: frete,
+                      fmt: AppFormatters.brl,
                     ),
                   ),
 
@@ -459,6 +632,15 @@ class _WideTable extends StatelessWidget {
                       fmt: AppFormatters.brl,
                     ),
                   ),
+
+                  DataCell(
+                    _FxUsedCell(
+                      row: r,
+                      viewSide: viewSide,
+                      prevValue: prevSnap?.fxUsed,
+                    ),
+                  ),
+
                   DataCell(
                     _FlashCell.num(
                       id: 'tusd-$id',
@@ -478,26 +660,37 @@ class _WideTable extends StatelessWidget {
                     ),
                   ),
 
-                  // ✅ agora dá pra clicar direto no lock também (além do menu)
                   DataCell(
                     InkWell(
                       borderRadius: BorderRadius.circular(999),
                       onTap: () => onAction(r, 'travar_cbot'),
-                      child: _FlashCell.lock(id: 'cbot-$id', prevPct: prevSnap?.cbotPct, ui: uiC),
+                      child: _FlashCell.lock(
+                        id: 'cbot-$id',
+                        prevPct: prevSnap?.cbotPct,
+                        ui: uiC,
+                      ),
                     ),
                   ),
                   DataCell(
                     InkWell(
                       borderRadius: BorderRadius.circular(999),
                       onTap: () => onAction(r, 'travar_premio'),
-                      child: _FlashCell.lock(id: 'prem-$id', prevPct: prevSnap?.premPct, ui: uiP),
+                      child: _FlashCell.lock(
+                        id: 'prem-$id',
+                        prevPct: prevSnap?.premPct,
+                        ui: uiP,
+                      ),
                     ),
                   ),
                   DataCell(
                     InkWell(
                       borderRadius: BorderRadius.circular(999),
                       onTap: () => onAction(r, 'travar_fx'),
-                      child: _FlashCell.lock(id: 'fx-$id', prevPct: prevSnap?.fxPct, ui: uiF),
+                      child: _FlashCell.lock(
+                        id: 'fx-$id',
+                        prevPct: prevSnap?.fxPct,
+                        ui: uiF,
+                      ),
                     ),
                   ),
 
@@ -512,11 +705,146 @@ class _WideTable extends StatelessWidget {
   }
 }
 
-// ---------------- COMPACT LIST ----------------
-
-class _CompactList extends StatelessWidget {
+/// ======================================================
+/// FIXO WIDE TABLE
+/// ======================================================
+class _WideTableFixo extends StatelessWidget {
   final List<ContractMtmRow> rows;
   final DateFormat df;
+
+  final OnContractAction onAction;
+
+  final Map<int, _RowSnapshot> prev;
+  final void Function(int id, _RowSnapshot next) commit;
+  final _RowSnapshot Function(ContractMtmRow r) snapOf;
+
+  const _WideTableFixo({
+    required this.rows,
+    required this.df,
+    required this.onAction,
+    required this.prev,
+    required this.commit,
+    required this.snapOf,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.55)),
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: DataTable(
+            headingRowHeight: 46,
+            dataRowMinHeight: 46,
+            dataRowMaxHeight: 60,
+            columnSpacing: 22,
+            horizontalMargin: 12,
+            headingTextStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: cs.onSurface.withValues(alpha: 0.85),
+            ),
+            columns: const [
+              DataColumn(label: Text('Contrato')),
+              DataColumn(label: Text('Entrega')),
+              DataColumn(label: Text('Volume'), numeric: true),
+              DataColumn(label: Text('Preço fixo'), numeric: true),
+              DataColumn(label: Text('Frete'), numeric: true),
+              DataColumn(label: Text('Total BRL'), numeric: true),
+              DataColumn(label: Text('Obs')),
+              DataColumn(label: Text('Ações')),
+            ],
+            rows: rows.map((r) {
+              final c = r.contract;
+              final id = c.id;
+
+              final prevSnap = prev[id];
+              final nextSnap = snapOf(r);
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => commit(id, nextSnap),
+              );
+
+              final brlSc = _fixoBrlPerSaca(r) ?? 0.0;
+              final frete = _freteTotalBrl(r);
+              final totalBrl = (r.totals.brlTotalContract.system ?? 0.0);
+
+              return DataRow(
+                onSelectChanged: (_) => onAction(r, 'detalhar'),
+                cells: [
+                  DataCell(Text('#$id')),
+                  DataCell(Text(df.format(c.dataEntrega))),
+                  DataCell(
+                    _FlashCell.text(
+                      id: 'vol-fixo-$id',
+                      prevText: prevSnap == null
+                          ? null
+                          : '${AppFormatters.ton(prevSnap.ton, decimals: 0)} t / ${AppFormatters.sacas(prevSnap.sacas)} sc',
+                      text:
+                          '${AppFormatters.ton(r.totals.tonTotal, decimals: 0)} t / ${AppFormatters.sacas(r.totals.sacasTotal)} sc',
+                    ),
+                  ),
+                  DataCell(
+                    _FlashCell.num(
+                      id: 'fixosc-$id',
+                      prev: prevSnap?.brlSaca,
+                      value: brlSc,
+                      fmt: AppFormatters.brl,
+                      emphasize: true,
+                    ),
+                  ),
+                  DataCell(
+                    _FlashCell.num(
+                      id: 'frete-fixo-$id',
+                      prev: prevSnap?.freteBrl,
+                      value: frete,
+                      fmt: AppFormatters.brl,
+                    ),
+                  ),
+                  DataCell(
+                    _FlashCell.num(
+                      id: 'tbrl-fixo-$id',
+                      prev: prevSnap?.totalBrl,
+                      value: totalBrl,
+                      fmt: AppFormatters.brl,
+                      emphasize: true,
+                    ),
+                  ),
+                  DataCell(
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 280),
+                      child: Text(
+                        (c.freteObs ?? c.observacao ?? '').trim().isEmpty
+                            ? '—'
+                            : (c.freteObs ?? c.observacao ?? '').trim(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  DataCell(ActionsMenu(onSelected: (a) => onAction(r, a))),
+                ],
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ======================================================
+/// COMPACT LIST MTM
+/// ======================================================
+class _CompactListMtm extends StatelessWidget {
+  final List<ContractMtmRow> rows;
+  final DateFormat df;
+
+  final DashboardViewSide viewSide;
 
   final LockStatusUi Function(ContractMtmRow r) cbotUi;
   final LockStatusUi Function(ContractMtmRow r) premUi;
@@ -531,9 +859,10 @@ class _CompactList extends StatelessWidget {
   final void Function(int id, _RowSnapshot next) commit;
   final _RowSnapshot Function(ContractMtmRow r) snapOf;
 
-  const _CompactList({
+  const _CompactListMtm({
     required this.rows,
     required this.df,
+    required this.viewSide,
     required this.cbotUi,
     required this.premUi,
     required this.fxUi,
@@ -552,9 +881,10 @@ class _CompactList extends StatelessWidget {
     return Column(
       children: [
         for (int i = 0; i < rows.length; i++) ...[
-          _ContractTile(
+          _ContractTileMtm(
             row: rows[i],
             df: df,
+            viewSide: viewSide,
             cbot: cbotUi(rows[i]),
             prem: premUi(rows[i]),
             fx: fxUi(rows[i]),
@@ -577,9 +907,11 @@ class _CompactList extends StatelessWidget {
   }
 }
 
-class _ContractTile extends StatelessWidget {
+class _ContractTileMtm extends StatelessWidget {
   final ContractMtmRow row;
   final DateFormat df;
+
+  final DashboardViewSide viewSide;
 
   final LockStatusUi cbot;
   final LockStatusUi prem;
@@ -594,9 +926,10 @@ class _ContractTile extends StatelessWidget {
   final ValueChanged<_RowSnapshot> onCommit;
   final _RowSnapshot Function(ContractMtmRow r) snapOf;
 
-  const _ContractTile({
+  const _ContractTileMtm({
     required this.row,
     required this.df,
+    required this.viewSide,
     required this.cbot,
     required this.prem,
     required this.fx,
@@ -616,8 +949,12 @@ class _ContractTile extends StatelessWidget {
     final c = row.contract;
     final id = c.id;
 
-    final usdSaca = row.valuation.usdPerSaca.manual ?? row.valuation.usdPerSaca.system;
-    final brlSaca = row.valuation.brlPerSaca.manual ?? row.valuation.brlPerSaca.system;
+    final usdSaca =
+        row.valuation.usdPerSaca.manual ?? row.valuation.usdPerSaca.system;
+    final brlSaca =
+        row.valuation.brlPerSaca.manual ?? row.valuation.brlPerSaca.system;
+
+    final frete = _freteTotalBrl(row);
 
     final nextSnap = snapOf(row);
     WidgetsBinding.instance.addPostFrameCallback((_) => onCommit(nextSnap));
@@ -636,7 +973,9 @@ class _ContractTile extends StatelessWidget {
                 Expanded(
                   child: Text(
                     'Contrato #$id',
-                    style: t.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+                    style: t.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
                 Text(
@@ -656,8 +995,25 @@ class _ContractTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _MiniPill(label: 'Volume', value: '${AppFormatters.ton(row.totals.tonTotal, decimals: 0)} t', id: 'vol-$id'),
-                _MiniPill(label: 'Sacas', value: '${AppFormatters.sacas(row.totals.sacasTotal)} sc', id: 'sac-$id'),
+                _MiniPill(
+                  label: 'Volume',
+                  value:
+                      '${AppFormatters.ton(row.totals.tonTotal, decimals: 0)} t',
+                  id: 'vol-$id',
+                ),
+                _MiniPill(
+                  label: 'Sacas',
+                  value: '${AppFormatters.sacas(row.totals.sacasTotal)} sc',
+                  id: 'sac-$id',
+                ),
+                _MiniPill(
+                  label: 'Frete',
+                  value: AppFormatters.brl(frete),
+                  id: 'frete-$id',
+                  prevNum: prevSnap?.freteBrl,
+                  num: frete,
+                  fmt: AppFormatters.brl,
+                ),
                 _MiniPill(
                   label: 'USD/sc',
                   value: AppFormatters.usd(usdSaca),
@@ -683,6 +1039,14 @@ class _ContractTile extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
+                _MiniPill(
+                  label: 'FX usado',
+                  value: _fxUsedLabel(row, viewSide),
+                  id: 'fxused-$id',
+                  prevNum: prevSnap?.fxUsed,
+                  num: (_fxUsedRate(row, viewSide) ?? 0.0),
+                  fmt: (v) => AppFormatters.dec(v, decimals: 4, us: false),
+                ),
                 _MiniPill(
                   label: 'Total USD',
                   value: AppFormatters.usd(totalUsd),
@@ -711,17 +1075,29 @@ class _ContractTile extends StatelessWidget {
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
                   onTap: () => onAction(row, 'travar_cbot'),
-                  child: _FlashCell.lock(id: 'cbot-$id', prevPct: prevSnap?.cbotPct, ui: cbot),
+                  child: _FlashCell.lock(
+                    id: 'cbot-$id',
+                    prevPct: prevSnap?.cbotPct,
+                    ui: cbot,
+                  ),
                 ),
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
                   onTap: () => onAction(row, 'travar_premio'),
-                  child: _FlashCell.lock(id: 'prem-$id', prevPct: prevSnap?.premPct, ui: prem),
+                  child: _FlashCell.lock(
+                    id: 'prem-$id',
+                    prevPct: prevSnap?.premPct,
+                    ui: prem,
+                  ),
                 ),
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
                   onTap: () => onAction(row, 'travar_fx'),
-                  child: _FlashCell.lock(id: 'fx-$id', prevPct: prevSnap?.fxPct, ui: fx),
+                  child: _FlashCell.lock(
+                    id: 'fx-$id',
+                    prevPct: prevSnap?.fxPct,
+                    ui: fx,
+                  ),
                 ),
               ],
             ),
@@ -732,7 +1108,509 @@ class _ContractTile extends StatelessWidget {
   }
 }
 
-// ---------------- FLASH CELL ----------------
+/// ======================================================
+/// COMPACT LIST FIXO
+/// ======================================================
+class _CompactListFixo extends StatelessWidget {
+  final List<ContractMtmRow> rows;
+  final DateFormat df;
+
+  final OnContractAction onAction;
+
+  final Map<int, _RowSnapshot> prev;
+  final void Function(int id, _RowSnapshot next) commit;
+  final _RowSnapshot Function(ContractMtmRow r) snapOf;
+
+  const _CompactListFixo({
+    required this.rows,
+    required this.df,
+    required this.onAction,
+    required this.prev,
+    required this.commit,
+    required this.snapOf,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Column(
+      children: [
+        for (int i = 0; i < rows.length; i++) ...[
+          _ContractTileFixo(
+            row: rows[i],
+            df: df,
+            onAction: onAction,
+            prevSnap: prev[rows[i].contract.id],
+            onCommit: (snap) => commit(rows[i].contract.id, snap),
+            snapOf: snapOf,
+          ),
+          if (i != rows.length - 1)
+            Divider(
+              height: 18,
+              thickness: 1,
+              color: cs.outlineVariant.withValues(alpha: 0.55),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ContractTileFixo extends StatelessWidget {
+  final ContractMtmRow row;
+  final DateFormat df;
+
+  final OnContractAction onAction;
+
+  final _RowSnapshot? prevSnap;
+  final ValueChanged<_RowSnapshot> onCommit;
+  final _RowSnapshot Function(ContractMtmRow r) snapOf;
+
+  const _ContractTileFixo({
+    required this.row,
+    required this.df,
+    required this.onAction,
+    required this.prevSnap,
+    required this.onCommit,
+    required this.snapOf,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    final cs = t.colorScheme;
+
+    final c = row.contract;
+    final id = c.id;
+
+    final frete = _freteTotalBrl(row);
+    final brlSc = _fixoBrlPerSaca(row) ?? 0.0;
+    final totalBrl = (row.totals.brlTotalContract.system ?? 0.0);
+
+    final nextSnap = snapOf(row);
+    WidgetsBinding.instance.addPostFrameCallback((_) => onCommit(nextSnap));
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => onAction(row, 'detalhar'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Top row
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Contrato #$id • FIXO BRL',
+                    style: t.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                Text(
+                  df.format(c.dataEntrega),
+                  style: t.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant.withValues(alpha: 0.92),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                ActionsMenu(onSelected: (a) => onAction(row, a)),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _MiniPill(
+                  label: 'Volume',
+                  value:
+                      '${AppFormatters.ton(row.totals.tonTotal, decimals: 0)} t',
+                  id: 'vol-f-$id',
+                ),
+                _MiniPill(
+                  label: 'Sacas',
+                  value: '${AppFormatters.sacas(row.totals.sacasTotal)} sc',
+                  id: 'sac-f-$id',
+                ),
+                _MiniPill(
+                  label: 'Preço fixo',
+                  value: AppFormatters.brl(brlSc),
+                  id: 'fixosc-$id',
+                  prevNum: prevSnap?.brlSaca,
+                  num: brlSc,
+                  fmt: AppFormatters.brl,
+                ),
+                _MiniPill(
+                  label: 'Frete',
+                  value: AppFormatters.brl(frete),
+                  id: 'frete-f-$id',
+                  prevNum: prevSnap?.freteBrl,
+                  num: frete,
+                  fmt: AppFormatters.brl,
+                ),
+                _MiniPill(
+                  label: 'Total BRL',
+                  value: AppFormatters.brl(totalBrl),
+                  id: 'tbrl-f-$id',
+                  prevNum: prevSnap?.totalBrl,
+                  num: totalBrl,
+                  fmt: AppFormatters.brl,
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            if ((c.freteObs ?? c.observacao ?? '').trim().isNotEmpty)
+              Text(
+                (c.freteObs ?? c.observacao ?? '').trim(),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: t.textTheme.bodySmall?.copyWith(
+                  color: cs.onSurfaceVariant.withValues(alpha: 0.92),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ======================================================
+/// FX USED CELL (visual diferente se travado vs live)
+/// ======================================================
+class _FxUsedCell extends StatelessWidget {
+  final ContractMtmRow row;
+  final DashboardViewSide viewSide;
+  final double? prevValue;
+
+  const _FxUsedCell({
+    required this.row,
+    required this.viewSide,
+    required this.prevValue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    final used = _fxUsedRate(row, viewSide);
+    final label = _fxUsedLabel(row, viewSide);
+
+    final isLockedFx = _isFxLocked(row, viewSide);
+
+    final icon = isLockedFx ? Icons.lock_rounded : Icons.timeline_rounded;
+    final tone = isLockedFx ? cs.primary : cs.tertiary;
+
+    // flash suave quando muda o FX usado
+    final v = (used ?? 0.0);
+    final prev = prevValue;
+
+    return _FlashPill(
+      prev: prev,
+      value: v,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: tone.withValues(alpha: 0.92)),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  color: cs.onSurface.withValues(alpha: 0.88),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                _fxUsedSub(row, viewSide),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: cs.onSurfaceVariant.withValues(alpha: 0.90),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FlashPill extends StatefulWidget {
+  final double? prev;
+  final double value;
+  final Widget child;
+
+  const _FlashPill({
+    required this.prev,
+    required this.value,
+    required this.child,
+  });
+
+  @override
+  State<_FlashPill> createState() => _FlashPillState();
+}
+
+class _FlashPillState extends State<_FlashPill> {
+  Color _flash = Colors.transparent;
+  int _nonce = 0;
+
+  bool _changed(double? a, double b) {
+    if (a == null) return false;
+    return (a - b).abs() > 0.00001;
+  }
+
+  @override
+  void didUpdateWidget(covariant _FlashPill oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (_changed(widget.prev, widget.value)) {
+      _triggerFlash();
+    }
+  }
+
+  Future<void> _triggerFlash() async {
+    if (!mounted) return;
+    final cs = Theme.of(context).colorScheme;
+    final cur = ++_nonce;
+    setState(() => _flash = cs.secondary.withValues(alpha: 0.18));
+    await Future.delayed(const Duration(milliseconds: 520));
+    if (!mounted) return;
+    if (cur != _nonce) return;
+    setState(() => _flash = Colors.transparent);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+
+      decoration: BoxDecoration(
+        color: Color.alphaBlend(_flash, cs.surface),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.55)),
+      ),
+      child: widget.child,
+    );
+  }
+}
+
+/// ======================================================
+/// HELPERS: frete / fixo / fx used
+/// ======================================================
+
+double _freteTotalBrl(ContractMtmRow r) {
+  final c = r.contract;
+  final ft = c.freteBrlTotal;
+  if (ft != null && ft.isFinite) return ft;
+
+  final perTon = c.freteBrlPerTon;
+  if (perTon != null && perTon.isFinite) {
+    final ton = r.totals.tonTotal.isFinite ? r.totals.tonTotal : 0.0;
+    return perTon * ton;
+  }
+  return 0.0;
+}
+
+double? _fixoBrlPerSaca(ContractMtmRow r) {
+  final c = r.contract;
+  final v = c.precoFixoBrlValue;
+  if (v == null) return null;
+
+  final u = (c.precoFixoBrlUnit ?? '').trim().toUpperCase();
+  if (u == 'BRL/SC' || u == 'BRL/SACA' || u == 'BRL_SC') {
+    return v;
+  }
+  // suporte opcional: BRL/TON
+  if (u == 'BRL/TON' || u == 'BRL_TON') {
+    final sacasPerTon = 1000.0 / 60.0;
+    return v / sacasPerTon;
+  }
+  // fallback: assume BRL/sc
+  return v;
+}
+
+bool _isFxLocked(ContractMtmRow r, DashboardViewSide side) {
+  // sua API indica modo:
+  final mode = (side == DashboardViewSide.manual)
+      ? r.totals.fxLockMode.manual
+      : r.totals.fxLockMode.system;
+  final m = (mode).trim().toLowerCase();
+
+  // se há hedge fx ou cobertura > 0 => consideramos “tem trava”
+  final cov = r.locks.fx.coveragePct;
+  final hasCov = cov.isFinite && cov > 0.000001;
+
+  return hasCov || (m != 'none');
+}
+
+double? _fxUsedRate(ContractMtmRow r, DashboardViewSide side) {
+  // melhor: usar o "fx_effective_brl_per_usd" que você já manda em valuation.components
+  final comp = r.valuation.components['fx_effective_brl_per_usd'];
+  final v = (side == DashboardViewSide.manual) ? comp?.manual : comp?.system;
+  if (v != null && v.isFinite && v > 0) return v;
+
+  // fallback: derivar via brl/sc / usd/sc
+  final usdSc =
+      (r.valuation.usdPerSaca.manual ?? r.valuation.usdPerSaca.system);
+  final brlSc = (side == DashboardViewSide.manual)
+      ? r.valuation.brlPerSaca.manual
+      : r.valuation.brlPerSaca.system;
+  if (usdSc == null || brlSc == null) return null;
+  if (usdSc.abs() < 1e-12) return null;
+  return brlSc / usdSc;
+}
+
+String _fxUsedLabel(ContractMtmRow r, DashboardViewSide side) {
+  final used = _fxUsedRate(r, side);
+  final v = used == null
+      ? '—'
+      : AppFormatters.dec(used, decimals: 4, us: false);
+
+  final locked = _isFxLocked(r, side);
+  return locked ? 'TRAVADO $v' : 'LIVE $v';
+}
+
+String _fxUsedSub(ContractMtmRow r, DashboardViewSide side) {
+  // se travado via usd_amount, mostrar o USD travado (quando existir)
+  final mode = (side == DashboardViewSide.manual)
+      ? r.totals.fxLockMode.manual
+      : r.totals.fxLockMode.system;
+  final m = mode.trim().toLowerCase();
+
+  if (_isFxLocked(r, side)) {
+    if (m == 'usd_amount') {
+      final usd = r.locks.fx.usdAmount;
+      final s = usd == null
+          ? 'USD travado'
+          : 'USD travado: ${AppFormatters.usd(usd)}';
+      return s;
+    }
+    final pct = (r.locks.fx.coveragePct.isFinite ? r.locks.fx.coveragePct : 0.0)
+        .clamp(0.0, 1.0);
+    return 'Cobertura: ${AppFormatters.pct(pct, decimals: 0)}';
+  }
+
+  // LIVE: indicar origem (system/manual)
+  if (side == DashboardViewSide.manual) {
+    final fxm = r.quotes.fxManual;
+    if (fxm == null) return 'Manual: —';
+    final ts = fxm.capturedAt == null
+        ? ''
+        : DateFormat('dd/MM HH:mm').format(fxm.capturedAt!.toLocal());
+    return 'Manual ${ts.isEmpty ? "" : "• $ts"}';
+  } else {
+    final fxs = r.quotes.fxSystem;
+    if (fxs == null) return 'System: —';
+    final ts = fxs.capturadoEm == null
+        ? ''
+        : DateFormat('dd/MM HH:mm').format(fxs.capturadoEm!.toLocal());
+    final src = (fxs.source).trim();
+    return '${src.isEmpty ? "System" : src}${ts.isEmpty ? "" : " • $ts"}';
+  }
+}
+
+/// ======================================================
+/// UI HELPERS (seções / vazios)
+/// ======================================================
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+
+  const _SectionHeader({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context);
+    final cs = t.colorScheme;
+
+    return Row(
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.65),
+            border: Border.all(
+              color: cs.outlineVariant.withValues(alpha: 0.55),
+            ),
+          ),
+          child: Icon(
+            icon,
+            size: 18,
+            color: cs.onSurface.withValues(alpha: 0.86),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: t.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        _SummaryPill(text: subtitle),
+      ],
+    );
+  }
+}
+
+class _EmptyInline extends StatelessWidget {
+  final String text;
+  const _EmptyInline({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.55)),
+      ),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          fontWeight: FontWeight.w800,
+          color: cs.onSurfaceVariant.withValues(alpha: 0.92),
+        ),
+      ),
+    );
+  }
+}
+
+/// ======================================================
+/// FLASH CELL (igual ao seu, mantido) + UI helpers (mantidos)
+/// ======================================================
 
 class _FlashCell extends StatefulWidget {
   final String id;
@@ -833,7 +1711,7 @@ class _FlashCellState extends State<_FlashCell> {
   void didUpdateWidget(covariant _FlashCell oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // TEXT cell (volume)
+    // TEXT cell
     if (widget.value == null && widget.ui == null) {
       final prev = widget.prevText;
       if (prev != null && prev != widget.text) {
@@ -859,8 +1737,8 @@ class _FlashCellState extends State<_FlashCell> {
     final flash = wentUp == null
         ? cs.secondary.withValues(alpha: 0.18)
         : (wentUp
-            ? Colors.green.withValues(alpha: 0.18)
-            : Colors.red.withValues(alpha: 0.18));
+              ? Colors.green.withValues(alpha: 0.18)
+              : Colors.red.withValues(alpha: 0.18));
 
     final cur = ++_nonce;
     setState(() => _flash = flash);
@@ -895,7 +1773,11 @@ class _FlashCellState extends State<_FlashCell> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(_lockIcon(widget.ui!), size: 16, color: _lockTone(cs, widget.ui!).withValues(alpha: 0.92)),
+            Icon(
+              _lockIcon(widget.ui!),
+              size: 16,
+              color: _lockTone(cs, widget.ui!).withValues(alpha: 0.92),
+            ),
             const SizedBox(width: 8),
             _AnimatedSwapText(
               text: widget.text,
@@ -926,8 +1808,6 @@ class _FlashCellState extends State<_FlashCell> {
     switch (ui.state) {
       case LockVisualState.locked:
         return Icons.lock_rounded;
-      case LockVisualState.partial:
-        return Icons.lock_clock_rounded;
       case LockVisualState.open:
         return Icons.lock_open_rounded;
     }
@@ -937,8 +1817,6 @@ class _FlashCellState extends State<_FlashCell> {
     switch (ui.state) {
       case LockVisualState.locked:
         return cs.primary;
-      case LockVisualState.partial:
-        return cs.secondary;
       case LockVisualState.open:
         return cs.tertiary;
     }
@@ -958,9 +1836,15 @@ class _AnimatedSwapText extends StatelessWidget {
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, anim) {
-        final slide = Tween<Offset>(begin: const Offset(0, 0.14), end: Offset.zero).animate(anim);
+        final slide = Tween<Offset>(
+          begin: const Offset(0, 0.14),
+          end: Offset.zero,
+        ).animate(anim);
         final fade = CurvedAnimation(parent: anim, curve: Curves.easeOut);
-        return FadeTransition(opacity: fade, child: SlideTransition(position: slide, child: child));
+        return FadeTransition(
+          opacity: fade,
+          child: SlideTransition(position: slide, child: child),
+        );
       },
       child: Text(
         text,
@@ -1001,9 +1885,11 @@ class _ControlsRow extends StatelessWidget {
             controller: searchCtrl,
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search_rounded),
-              hintText: 'Buscar por #id ou entrega...',
+              hintText: 'Buscar por #id, entrega ou tipo...',
               isDense: true,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               suffixIcon: searchCtrl.text.isEmpty
                   ? null
                   : IconButton(
@@ -1039,7 +1925,10 @@ class ActionsMenu extends StatelessWidget {
       onSelected: onSelected,
       itemBuilder: (context) => const [
         PopupMenuItem(value: 'detalhar', child: Text('Detalhar')),
-        PopupMenuItem(value: 'comparar', child: Text('Comparar Manual vs System')),
+        PopupMenuItem(
+          value: 'comparar',
+          child: Text('Comparar Manual vs System'),
+        ),
         PopupMenuDivider(),
         PopupMenuItem(value: 'travar_cbot', child: Text('Travar CBOT…')),
         PopupMenuItem(value: 'travar_premio', child: Text('Travar Prêmio…')),
@@ -1091,9 +1980,9 @@ class _SummaryPill extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              fontWeight: FontWeight.w900,
-              color: cs.onSurfaceVariant.withValues(alpha: 0.92),
-            ),
+          fontWeight: FontWeight.w900,
+          color: cs.onSurfaceVariant.withValues(alpha: 0.92),
+        ),
       ),
     );
   }
@@ -1103,7 +1992,6 @@ class _MiniPill extends StatelessWidget {
   final String label;
   final String value;
 
-  // para flash no compact
   final String id;
   final double? prevNum;
   final double? num;
@@ -1125,7 +2013,10 @@ class _MiniPill extends StatelessWidget {
 
     final content = (num != null && fmt != null)
         ? _FlashCell.num(id: id, prev: prevNum, value: num!, fmt: fmt!)
-        : _AnimatedSwapText(text: value, style: t.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w900));
+        : _AnimatedSwapText(
+            text: value,
+            style: t.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w900),
+          );
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1173,7 +2064,12 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: t.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
+          Text(
+            title,
+            style: t.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           const SizedBox(height: 6),
           Text(
             subtitle,
@@ -1197,9 +2093,13 @@ class _RowSnapshot {
   final double brlSaca;
   final double totalUsd;
   final double totalBrl;
+  final double freteBrl;
+
   final double cbotPct;
   final double premPct;
   final double fxPct;
+
+  final double fxUsed;
 
   const _RowSnapshot({
     required this.ton,
@@ -1208,8 +2108,10 @@ class _RowSnapshot {
     required this.brlSaca,
     required this.totalUsd,
     required this.totalBrl,
+    required this.freteBrl,
     required this.cbotPct,
     required this.premPct,
     required this.fxPct,
+    required this.fxUsed,
   });
 }

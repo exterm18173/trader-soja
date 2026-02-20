@@ -7,13 +7,12 @@ import '../../repositories/contracts_mtm_repository.dart';
 import 'contracts_mtm_response.dart';
 
 enum DashboardViewSide { manual, system }
-
-enum LockVisualState { locked, partial, open }
+enum LockVisualState { locked, open }
 
 class LockStatusUi {
   final LockVisualState state;
   final double coveragePct; // 0..1
-  final String label; // "Travado", "Parcial", "Aberto"
+  final String label; // "Travado" | "Aberto"
 
   const LockStatusUi({
     required this.state,
@@ -30,7 +29,6 @@ class ContractsMtmKpis {
   final double avgUsdPerSaca;
   final double avgBrlPerSaca;
 
-  // Exposição FX (ponderada por USD)
   final double fxLockedPct;
   final double fxUnlockedPct;
 
@@ -45,7 +43,6 @@ class ContractsMtmKpis {
     required this.fxUnlockedPct,
   });
 
-  // ✅ fingerprint simples pros cards (tolerância evita “piscar” por ruído)
   String fingerprint({int decimals = 4}) {
     String f(double v) => v.toStringAsFixed(decimals);
     return [
@@ -79,18 +76,15 @@ class LockAggregates {
 
 class LockBreakdown {
   final LockAggregates locked;
-  final LockAggregates partial;
   final LockAggregates open;
 
   const LockBreakdown({
     required this.locked,
-    required this.partial,
     required this.open,
   });
 
   static const empty = LockBreakdown(
     locked: LockAggregates.zero,
-    partial: LockAggregates.zero,
     open: LockAggregates.zero,
   );
 }
@@ -109,18 +103,25 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
   // filtros básicos
   bool onlyOpen = true;
   String mode = 'both';
-  String defaultSymbol = 'ZS=F';
-  String? refMes; // YYYY-MM-01
+  String defaultSymbol = 'AUTO';
 
-  // --- realtime polling ---
+  /// backend: "YYYY-MM-30" (opcional; força FX)
+  String? refMes30;
+
+  // ✅ filtros de trava (locked/open)
+  Set<String> lockTypes = {};  // {'cbot','premium','fx'}
+  Set<String> lockStates = {}; // {'locked','open'}
+
+  // ✅ NOVO: sem travas (FIXO_BRL)
+  bool noLocks = false;
+
+  // realtime polling
   Timer? _pollTimer;
   Duration _pollEvery = const Duration(seconds: 10);
   bool realtimeEnabled = false;
 
-  // “tick” que pode ser usado pra animar / observar atualizações
   int updateTick = 0;
-
-  String? _lastFingerprint; // detecta mudança real (evita notify “à toa”)
+  String? _lastFingerprint;
 
   Future<void> load({required int farmId, bool silent = false}) async {
     if (!silent) {
@@ -128,7 +129,6 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
       error = null;
       notifyListeners();
     } else {
-      // no silent você pode manter a UI sem “loading bar” se quiser
       error = null;
     }
 
@@ -137,20 +137,25 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
         farmId: farmId,
         mode: mode,
         onlyOpen: onlyOpen,
-        refMes: refMes,
+        refMes: refMes30,
         defaultSymbol: defaultSymbol,
         limit: 200,
+
+        // ✅ novo
+        noLocks: noLocks,
+
+        // ✅ só manda quando não for noLocks
+        lockTypes: (noLocks || lockTypes.isEmpty) ? null : lockTypes.join(','),
+        lockStates: (noLocks || lockStates.isEmpty) ? null : lockStates.join(','),
       );
 
-      // compute kpis com base no res (sem depender de data atual)
       final newKpis = _calcKpisFrom(res);
       final fp = newKpis.fingerprint();
 
-      // ✅ só aplica se mudou
       if (_lastFingerprint != fp || data == null) {
         data = res;
         _lastFingerprint = fp;
-        updateTick++; // força widgets “verem” a mudança (se quiser)
+        updateTick++;
         if (silent) notifyListeners();
       }
     } on Exception catch (e) {
@@ -164,13 +169,16 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
     }
   }
 
-  void startRealtime({required int farmId, Duration every = const Duration(seconds: 10)}) {
+  // realtime
+  void startRealtime({
+    required int farmId,
+    Duration every = const Duration(seconds: 10),
+  }) {
     _pollEvery = every;
     realtimeEnabled = true;
 
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(_pollEvery, (_) {
-      // ✅ silent pra não ficar piscando loading toda hora
       load(farmId: farmId, silent: true);
     });
 
@@ -198,83 +206,144 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
     super.dispose();
   }
 
+  // UI setters
+  void notifyUi() => notifyListeners();
+
   void setViewSide(DashboardViewSide s) {
     if (viewSide == s) return;
     viewSide = s;
-
-    // muda o lado => muda fingerprint => atualiza “estado” pros flashes
     _lastFingerprint = kpis.fingerprint();
     notifyListeners();
   }
 
+  // ✅ noLocks toggle (e limpa os outros)
+  void setNoLocks(bool v) {
+    if (noLocks == v) return;
+    noLocks = v;
+    if (noLocks) {
+      lockTypes.clear();
+      lockStates.clear();
+    }
+    notifyListeners();
+  }
+
+  void toggleLockType(String t) {
+    if (noLocks) return; // ✅ bloqueia
+    if (!(t == 'cbot' || t == 'premium' || t == 'fx')) return;
+    if (lockTypes.contains(t)) {
+      lockTypes.remove(t);
+    } else {
+      lockTypes.add(t);
+    }
+    notifyListeners();
+  }
+
+  void toggleLockState(String s) {
+    if (noLocks) return; // ✅ bloqueia
+    if (!(s == 'locked' || s == 'open')) return;
+    if (lockStates.contains(s)) {
+      lockStates.remove(s);
+    } else {
+      lockStates.add(s);
+    }
+    notifyListeners();
+  }
+
+  void clearLockFilters() {
+    lockTypes.clear();
+    lockStates.clear();
+    notifyListeners();
+  }
+
+  void clearAllFilters() {
+    noLocks = false;
+    lockTypes.clear();
+    lockStates.clear();
+    notifyListeners();
+  }
+
+  // errors
   String errMsg(Object? e) {
     if (e is ApiException) return e.message;
     return e?.toString() ?? 'Erro desconhecido';
   }
 
-  // ---------- Helpers ----------
+  // totals selector
+  ContractTotalsView? _tv(ContractMtmRow r) => r.totalsView;
+
   double brlOfRow(ContractMtmRow r) {
-    final b = r.totals.brlTotalContract;
-    return (viewSide == DashboardViewSide.manual ? b.manual : b.system) ?? 0.0;
+    final tv = _tv(r);
+    final side = (tv?.brlTotalContract ?? r.totals.brlTotalContract);
+    return (viewSide == DashboardViewSide.manual ? side.manual : side.system) ?? 0.0;
   }
 
-  double usdOfRow(ContractMtmRow r) => r.totals.usdTotalContract ?? 0.0;
+  double usdOfRow(ContractMtmRow r) {
+    final tv = _tv(r);
+    return tv?.usdTotalContract ?? r.totals.usdTotalContract ?? 0.0;
+  }
 
-  double _usdOfRow(ContractMtmRow r) => usdOfRow(r);
-  double _brlOfRow(ContractMtmRow r) => brlOfRow(r);
+  double tonOfRow(ContractMtmRow r) {
+    final tv = _tv(r);
+    return tv?.tonTotal ?? r.totals.tonTotal;
+  }
 
-  // status visual por lock
+  double sacasOfRow(ContractMtmRow r) {
+    final tv = _tv(r);
+    return tv?.sacasTotal ?? r.totals.sacasTotal;
+  }
+
+  // lock UI
   LockStatusUi lockUiFrom({required bool locked, required double coveragePct}) {
     final pct = coveragePct.clamp(0.0, 1.0);
     if (locked || pct >= 0.999) {
       return LockStatusUi(state: LockVisualState.locked, coveragePct: pct, label: 'Travado');
     }
-    if (pct > 0.0) {
-      return LockStatusUi(state: LockVisualState.partial, coveragePct: pct, label: 'Parcial');
-    }
-    return const LockStatusUi(state: LockVisualState.open, coveragePct: 0.0, label: 'Aberto');
+    return LockStatusUi(state: LockVisualState.open, coveragePct: pct, label: 'Aberto');
   }
 
-  LockStatusUi cbotUi(ContractMtmRow r) =>
-      lockUiFrom(locked: r.locks.cbot.locked, coveragePct: r.locks.cbot.coveragePct);
+  LockStatusUi cbotUi(ContractMtmRow r) => lockUiFrom(
+        locked: r.locks.cbot.locked,
+        coveragePct: r.locks.cbot.coveragePct,
+      );
 
-  LockStatusUi premiumUi(ContractMtmRow r) =>
-      lockUiFrom(locked: r.locks.premium.locked, coveragePct: r.locks.premium.coveragePct);
+  LockStatusUi premiumUi(ContractMtmRow r) => lockUiFrom(
+        locked: r.locks.premium.locked,
+        coveragePct: r.locks.premium.coveragePct,
+      );
 
-  LockStatusUi fxUi(ContractMtmRow r) =>
-      lockUiFrom(locked: r.locks.fx.locked, coveragePct: r.locks.fx.coveragePct);
+  LockStatusUi fxUi(ContractMtmRow r) => lockUiFrom(
+        locked: r.locks.fx.locked,
+        coveragePct: r.locks.fx.coveragePct,
+      );
 
-  // ---------- KPIs agregados ----------
-  ContractsMtmKpis get kpis => data == null ? _calcKpisFrom(null) : _calcKpisFrom(data);
+  // KPIs
+  ContractsMtmKpis get kpis => _calcKpisFrom(data);
 
   ContractsMtmKpis _calcKpisFrom(ContractsMtmResponse? d) {
     final rows = d?.rows ?? const <ContractMtmRow>[];
 
     double ton = 0, sacas = 0, usd = 0, brl = 0;
 
-    // FX exposição ponderada por USD
     double usdSum = 0;
     double fxLockedWeighted = 0;
     double fxUnlockedWeighted = 0;
 
     for (final r in rows) {
-      final t = r.totals;
-      final rowTon = t.tonTotal;
-      final rowSacas = t.sacasTotal;
-      final rowUsd = _usdOfRow(r);
-      final rowBrl = _brlOfRow(r);
+      final rowTon = tonOfRow(r);
+      final rowSacas = sacasOfRow(r);
+      final rowUsd = usdOfRow(r);
+      final rowBrl = brlOfRow(r);
 
       ton += rowTon;
       sacas += rowSacas;
       usd += rowUsd;
       brl += rowBrl;
 
-      final fxLockedPct = (t.fxLockedUsdPct == null)
-          ? 0.0
-          : (viewSide == DashboardViewSide.manual ? t.fxLockedUsdPct!.manual : t.fxLockedUsdPct!.system) ?? 0.0;
-      final fxUnlockedPct = (t.fxUnlockedUsdPct == null)
-          ? 1.0
-          : (viewSide == DashboardViewSide.manual ? t.fxUnlockedUsdPct!.manual : t.fxUnlockedUsdPct!.system) ?? 1.0;
+      final t = r.totals;
+      final fxLockedPct =
+          (viewSide == DashboardViewSide.manual ? t.fxLockedUsdPct.manual : t.fxLockedUsdPct.system) ?? 0.0;
+      final fxUnlockedPct =
+          (viewSide == DashboardViewSide.manual ? t.fxUnlockedUsdPct.manual : t.fxUnlockedUsdPct.system) ?? 1.0;
 
       usdSum += rowUsd;
       fxLockedWeighted += rowUsd * fxLockedPct;
@@ -299,45 +368,40 @@ class ContractsMtmDashboardVM extends ChangeNotifier {
     );
   }
 
-  // ---------- Distribuição do valor por contrato (top 6) ----------
   List<ContractMtmRow> get topRowsByBrl {
     final rows = [...(data?.rows ?? const <ContractMtmRow>[])];
     rows.sort((a, b) => brlOfRow(b).compareTo(brlOfRow(a)));
     return rows.take(rows.length > 6 ? 6 : rows.length).toList();
   }
 
-  // ---------- Breakdown por tipo de trava ----------
-  LockBreakdown breakdownForCbot() => _breakdownByUi((r) => cbotUi(r));
-  LockBreakdown breakdownForPremium() => _breakdownByUi((r) => premiumUi(r));
-  LockBreakdown breakdownForFx() => _breakdownByUi((r) => fxUi(r));
+  // breakdown
+  LockBreakdown breakdownForCbot() => _breakdownByUi(cbotUi);
+  LockBreakdown breakdownForPremium() => _breakdownByUi(premiumUi);
+  LockBreakdown breakdownForFx() => _breakdownByUi(fxUi);
 
   LockBreakdown _breakdownByUi(LockStatusUi Function(ContractMtmRow r) getUi) {
     final rows = data?.rows ?? const <ContractMtmRow>[];
 
     LockAggregates locked = LockAggregates.zero;
-    LockAggregates partial = LockAggregates.zero;
     LockAggregates open = LockAggregates.zero;
 
     for (final r in rows) {
       final ui = getUi(r);
-      final t = r.totals;
       final a = LockAggregates(
-        ton: t.tonTotal,
-        sacas: t.sacasTotal,
-        usd: _usdOfRow(r),
-        brl: _brlOfRow(r),
+        ton: tonOfRow(r),
+        sacas: sacasOfRow(r),
+        usd: usdOfRow(r),
+        brl: brlOfRow(r),
       );
 
       if (ui.state == LockVisualState.locked) {
         locked = _sumAgg(locked, a);
-      } else if (ui.state == LockVisualState.partial) {
-        partial = _sumAgg(partial, a);
       } else {
         open = _sumAgg(open, a);
       }
     }
 
-    return LockBreakdown(locked: locked, partial: partial, open: open);
+    return LockBreakdown(locked: locked, open: open);
   }
 
   LockAggregates _sumAgg(LockAggregates x, LockAggregates y) {

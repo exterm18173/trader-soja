@@ -187,8 +187,8 @@ class _ContractsMtmScreenState extends State<ContractsMtmScreen> {
           c = numOr0(brlTot(a)).compareTo(numOr0(brlTot(b)));
           break;
         case 6:
-          final p = (mode == 'manual') ? a.totals.fxLockedUsdPct?.manual : a.totals.fxLockedUsdPct?.system;
-          final q = (mode == 'manual') ? b.totals.fxLockedUsdPct?.manual : b.totals.fxLockedUsdPct?.system;
+          final p = (mode == 'manual') ? a.totals.fxLockedUsdPct.manual : a.totals.fxLockedUsdPct.system;
+          final q = (mode == 'manual') ? b.totals.fxLockedUsdPct.manual : b.totals.fxLockedUsdPct.system;
           c = numOr0(p).compareTo(numOr0(q));
           break;
         case 7:
@@ -728,7 +728,7 @@ class _ContractCard extends StatelessWidget {
     final brlSaca = _side(row.valuation.brlPerSaca.system, row.valuation.brlPerSaca.manual);
     final brlTot = _side(row.totals.brlTotalContract.system, row.totals.brlTotalContract.manual);
 
-    final fxLockedPct = _side(row.totals.fxLockedUsdPct?.system, row.totals.fxLockedUsdPct?.manual);
+    final fxLockedPct = _side(row.totals.fxLockedUsdPct.system, row.totals.fxLockedUsdPct.manual);
     final fxMode = (mode == 'manual') ? row.totals.fxLockMode.manual : row.totals.fxLockMode.system;
 
     final tags = alertTags(row);
@@ -863,7 +863,7 @@ class _TableView extends StatelessWidget {
                   final brlSaca = _side(r.valuation.brlPerSaca.system, r.valuation.brlPerSaca.manual);
 
                   final brlTot = _side(r.totals.brlTotalContract.system, r.totals.brlTotalContract.manual);
-                  final fxPct = _side(r.totals.fxLockedUsdPct?.system, r.totals.fxLockedUsdPct?.manual);
+                  final fxPct = _side(r.totals.fxLockedUsdPct.system, r.totals.fxLockedUsdPct.manual);
 
                   return DataRow(
                     color: bg == null ? null : WidgetStatePropertyAll(bg),

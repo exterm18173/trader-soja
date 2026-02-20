@@ -22,18 +22,24 @@ def contracts_mtm(
     only_open: bool = Query(default=True),
     ref_mes: str | None = Query(
         default=None,
-        description=(
-            "YYYY-MM-30; se informado, força o ref_mes para FX (CBOT usa ref_mes do hedge/contrato)."
-        ),
+        description="YYYY-MM-30; se informado, força o ref_mes para FX (CBOT usa ref_mes do hedge/contrato).",
     ),
     default_symbol: str = Query(
         default="AUTO",
-        description=(
-            "CBOT: 'AUTO' usa o vencimento do mês do contrato (ex: Jul/26 -> ZSN26.CBT). "
-            "Ou informe símbolo fixo (ex: ZS=F)."
-        ),
+        description="CBOT: 'AUTO' usa o vencimento do mês do contrato. Ou informe símbolo fixo (ex: ZS=F).",
     ),
     limit: int = Query(default=200, ge=1, le=2000),
+
+    # lock filters
+    lock_types: str | None = Query(default=None, description="CSV: cbot,premium,fx"),
+    lock_states: str | None = Query(default=None, description="CSV: locked,open"),
+
+    # NOVO: sem travas (FIXO_BRL)
+    no_locks: bool = Query(
+        default=False,
+        description="Se true, retorna apenas contratos sem travas (ex: FIXO_BRL). Ignora lock_types/lock_states.",
+    ),
+
     db: Session = Depends(get_db),
     membership=Depends(get_farm_membership_from_path),
 ):
@@ -45,4 +51,7 @@ def contracts_mtm(
         ref_mes=ref_mes,
         default_symbol=default_symbol,
         limit=limit,
+        lock_types=lock_types,
+        lock_states=lock_states,
+        no_locks=no_locks,
     )

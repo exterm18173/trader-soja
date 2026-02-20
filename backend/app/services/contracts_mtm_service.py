@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.contract import Contract
@@ -39,6 +39,8 @@ from app.schemas.contracts_mtm import (
     ContractTotals,
     TotalsSide,
     TotalsModeSide,
+    RowFilterMeta,
+    ContractTotalsView,
 )
 
 # --- Constantes de conversão (SOJA) ---
@@ -51,9 +53,18 @@ TON_PER_BU = SOY_BU_KG / 1000.0
 
 # CBOT month codes
 _CBOT_MONTH_CODE = {
-    1: "F",  2: "G",  3: "H",  4: "J",
-    5: "K",  6: "M",  7: "N",  8: "Q",
-    9: "U", 10: "V", 11: "X", 12: "Z",
+    1: "F",
+    2: "G",
+    3: "H",
+    4: "J",
+    5: "K",
+    6: "M",
+    7: "N",
+    8: "Q",
+    9: "U",
+    10: "V",
+    11: "X",
+    12: "Z",
 }
 
 
@@ -71,12 +82,12 @@ def _to_float(v) -> float | None:
 
 
 def _ref_mes_month(d: date) -> date:
-    """✅ seu padrão: dia 30 do mês."""
+    """Seu padrão: dia 30 do mês."""
     return date(d.year, d.month, 30)
 
 
 def _parse_ref_mes(s: str | None) -> date | None:
-    """✅ valida YYYY-MM-30"""
+    """Valida YYYY-MM-30."""
     if not s:
         return None
     try:
@@ -110,6 +121,74 @@ class _FxCurveSnap:
 
 class ContractsMtmService:
     # =========================
+    # Filters helpers (locks) - SIMPLES (locked/open)
+    # =========================
+    def _parse_csv_set(self, s: str | None) -> set[str]:
+        if not s:
+            return set()
+        return {p.strip().lower() for p in s.split(",") if p and p.strip()}
+
+    def _clamp01(self, v: float) -> float:
+        try:
+            x = float(v or 0.0)
+        except Exception:
+            x = 0.0
+        return 0.0 if x < 0 else 1.0 if x > 1 else x
+
+    def _state_simple(self, pct: float) -> str:
+        # sem partial: locked se tem alguma parte travada (>0), senão open
+        p = self._clamp01(pct)
+        return "locked" if p > 0.0 else "open"
+
+    def _locked_pct_and(self, pcts: list[float]) -> float:
+        # parte travada "em todos" = min(pcts)
+        if not pcts:
+            return 1.0
+        return min(self._clamp01(p) for p in pcts)
+
+    def _open_pct_and(self, pcts: list[float]) -> float:
+        # parte aberta "em todos" = 1 - max(pcts)
+        if not pcts:
+            return 0.0
+        return 1.0 - max(self._clamp01(p) for p in pcts)
+
+    def _slice_pct_from_states(self, locked_pct: float, open_pct: float, selected_states: set[str]) -> float:
+        locked_pct = self._clamp01(locked_pct)
+        open_pct = self._clamp01(open_pct)
+
+        has_locked = "locked" in selected_states
+        has_open = "open" in selected_states
+
+        # locked+open => total
+        if has_locked and has_open:
+            return 1.0
+        if has_locked:
+            return locked_pct
+        if has_open:
+            return open_pct
+        return 1.0
+
+    def _mul_side(self, side: TotalsSide, k: float) -> TotalsSide:
+        def m(v):
+            return None if v is None else self._r(float(v) * k, 4)
+
+        return TotalsSide(system=m(side.system), manual=m(side.manual))
+
+    def _mul_totals_view(self, totals: ContractTotals, k: float) -> ContractTotalsView:
+        k = self._clamp01(k)
+        return ContractTotalsView(
+            ton_total=self._r(totals.ton_total * k, 4) or 0.0,
+            sacas_total=self._r(totals.sacas_total * k, 0) or 0.0,
+            usd_total_contract=None if totals.usd_total_contract is None else self._r(totals.usd_total_contract * k, 4),
+            brl_total_contract=self._mul_side(totals.brl_total_contract, k),
+            fx_locked_usd_used=self._mul_side(totals.fx_locked_usd_used, k),
+            fx_unlocked_usd_used=self._mul_side(totals.fx_unlocked_usd_used, k),
+            # percentuais não escalados
+            fx_locked_usd_pct=TotalsSide(system=totals.fx_locked_usd_pct.system, manual=totals.fx_locked_usd_pct.manual),
+            fx_unlocked_usd_pct=TotalsSide(system=totals.fx_unlocked_usd_pct.system, manual=totals.fx_unlocked_usd_pct.manual),
+        )
+
+    # =========================
     # FIXO_BRL helpers
     # =========================
     def _frete_brl_total(self, c: Contract) -> float:
@@ -135,12 +214,27 @@ class ContractsMtmService:
         if u in ("BRL/SC", "BRL/SACA", "BRL_SC"):
             return float(v)
 
-        # suporte opcional se aparecer:
+        # suporte opcional
         if u in ("BRL/TON", "BRL_TON"):
             return float(v) / float(SACAS_PER_TON)
 
         # fallback: assume por saca
         return float(v)
+
+    # =========================
+    # Frete apply helper (NET)
+    # =========================
+    def _apply_frete_net(self, brl_per_saca: float | None, sacas_total: float, frete_total: float):
+        """
+        Regra: sempre NET = bruto - frete_total.
+        Retorna (brl_per_saca_net, brl_total_net, brl_total_gross) ou (None, None, None) se inválido.
+        """
+        if brl_per_saca is None or sacas_total <= 0:
+            return (None, None, None)
+        brl_total_gross = brl_per_saca * sacas_total
+        brl_total_net = brl_total_gross - float(frete_total or 0.0)
+        brl_per_saca_net = brl_total_net / sacas_total
+        return (brl_per_saca_net, brl_total_net, brl_total_gross)
 
     # =========================
     # Main
@@ -154,14 +248,48 @@ class ContractsMtmService:
         ref_mes: str | None,
         default_symbol: str,
         limit: int,
+        # ✅ filtros simplificados:
+        lock_types: str | None = None,
+        lock_states: str | None = None,
+        # ✅ NOVO: somente contratos sem travas (FIXO_BRL)
+        no_locks: bool = False,
     ) -> ContractsMtmResponse:
         forced_ref_mes = _parse_ref_mes(ref_mes)
 
+        # filtros locks (normaliza + limita valores)
+        selected_types = self._parse_csv_set(lock_types)
+        selected_states = self._parse_csv_set(lock_states)
+
+        selected_types = {t for t in selected_types if t in ("cbot", "premium", "fx")}
+        selected_states = {s for s in selected_states if s in ("locked", "open")}
+
+        # se no_locks=True => ignora filtros de trava
+        if no_locks:
+            selected_types = set()
+            selected_states = set()
+
+        filters_active = bool(selected_types) and bool(selected_states)
+
+        # -------------------------
+        # Query contracts (filtra cedo)
+        # -------------------------
         q = db.query(Contract).filter(Contract.farm_id == farm_id)
         q = q.filter(Contract.produto == "SOJA")
 
         if only_open:
             q = q.filter(Contract.status == "ABERTO")
+
+        if no_locks:
+            q = q.filter(func.upper(Contract.tipo_precificacao) == "FIXO_BRL")
+        else:
+            # se filtros locks ativos, remove FIXO_BRL do universo
+            if filters_active:
+                q = q.filter(
+                    or_(
+                        Contract.tipo_precificacao.is_(None),
+                        func.upper(Contract.tipo_precificacao) != "FIXO_BRL",
+                    )
+                )
 
         contracts = q.order_by(Contract.id.desc()).limit(limit).all()
 
@@ -180,14 +308,12 @@ class ContractsMtmService:
         last_prem = self._latest_hedge_premium_by_contract(db, contract_ids)
         last_fx = self._latest_hedge_fx_by_contract(db, contract_ids)
 
-        # ✅ CBOT precisa do par (symbol, ref_mes)
+        # CBOT precisa do par (symbol, ref_mes)
         cbot_pairs_needed: set[tuple[str, date]] = set()
-
-        # ✅ FX continua por ref_mes (agora dia 30)
+        # FX por ref_mes (dia 30)
         refmes_needed: set[date] = set()
 
         for c in contracts:
-            # ✅ FIXO_BRL: não precisa de CBOT/FX/PREMIO
             tipo = (getattr(c, "tipo_precificacao", None) or "").strip().upper()
             if tipo == "FIXO_BRL":
                 continue
@@ -221,15 +347,33 @@ class ContractsMtmService:
             tipo = (getattr(c, "tipo_precificacao", None) or "").strip().upper()
 
             # -------------------------
-            # ✅ FIXO_BRL: retorna só BRL (nada de USD/CBOT/FX/PREMIO)
+            # FIXO_BRL (sem travas)
             # -------------------------
             if tipo == "FIXO_BRL":
-                brl_sc = self._brl_fixo_per_saca(c)
+                brl_sc_gross = self._brl_fixo_per_saca(c)
                 frete_total = self._frete_brl_total(c)
 
-                brl_total = None
-                if brl_sc is not None and sacas_total > 0:
-                    brl_total = (brl_sc * sacas_total) + frete_total
+                brl_sc_net, brl_total_net, brl_total_gross = self._apply_frete_net(
+                    brl_per_saca=brl_sc_gross,
+                    sacas_total=sacas_total,
+                    frete_total=frete_total,
+                )
+
+                totals = ContractTotals(
+                    ton_total=self._r(vol_total_ton, 4) or 0.0,
+                    sacas_total=self._r(sacas_total, 0) or 0.0,
+                    usd_total_contract=None,
+                    brl_total_contract=TotalsSide(system=self._r(brl_total_net, 4), manual=None),
+                    fx_locked_usd_used=TotalsSide(system=None, manual=None),
+                    fx_unlocked_usd_used=TotalsSide(system=None, manual=None),
+                    fx_lock_mode=TotalsModeSide(system="none", manual="none"),
+                    fx_locked_usd_pct=TotalsSide(system=None, manual=None),
+                    fx_unlocked_usd_pct=TotalsSide(system=None, manual=None),
+                )
+
+                # se filtros locks ativos (e não estamos no modo no_locks), não inclui FIXO_BRL
+                if (not no_locks) and filters_active:
+                    continue
 
                 rows.append(
                     ContractMtmRow(
@@ -256,33 +400,22 @@ class ContractsMtmService:
                                 usd_amount=None,
                             ),
                         ),
-                        quotes=QuotesInfo(
-                            cbot_system=None,
-                            fx_system=None,
-                            fx_manual=None,
-                        ),
+                        quotes=QuotesInfo(cbot_system=None, fx_system=None, fx_manual=None),
                         valuation=Valuation(
                             usd_per_saca=ValuationSide(system=None, manual=None),
-                            brl_per_saca=ValuationSide(
-                                system=self._r(brl_sc, 4),
-                                manual=None,
-                            ),
-                            components={},  # ✅ sem componentes USD
+                            # ✅ BRL/Sc agora é líquido (já descontando frete)
+                            brl_per_saca=ValuationSide(system=self._r(brl_sc_net, 4), manual=None),
+                            components={
+                                # (opcional) ajuda muito a debugar
+                                "frete_brl_total": UsedComponent(system=self._r(frete_total, 4), manual=None),
+                                "brl_total_gross": UsedComponent(system=self._r(brl_total_gross, 4), manual=None),
+                                "brl_per_saca_gross": UsedComponent(system=self._r(brl_sc_gross, 4), manual=None),
+                                "brl_per_saca_net": UsedComponent(system=self._r(brl_sc_net, 4), manual=None),
+                            },
                         ),
-                        totals=ContractTotals(
-                            ton_total=self._r(vol_total_ton, 4) or 0.0,
-                            sacas_total=self._r(sacas_total, 0) or 0.0,
-                            usd_total_contract=None,
-                            brl_total_contract=TotalsSide(
-                                system=self._r(brl_total, 4),
-                                manual=None,
-                            ),
-                            fx_locked_usd_used=TotalsSide(system=None, manual=None),
-                            fx_unlocked_usd_used=TotalsSide(system=None, manual=None),
-                            fx_lock_mode=TotalsModeSide(system="none", manual="none"),
-                            fx_locked_usd_pct=TotalsSide(system=None, manual=None),
-                            fx_unlocked_usd_pct=TotalsSide(system=None, manual=None),
-                        ),
+                        totals=totals,
+                        totals_view=None,
+                        filter_meta=None,
                     )
                 )
                 continue
@@ -410,9 +543,7 @@ class ContractsMtmService:
             usd_per_bu_total = (cbot_effective + prem_effective) if cbot_effective is not None else None
             usd_per_saca = (usd_per_bu_total * BUSHELS_PER_SACA) if usd_per_bu_total is not None else None
 
-            usd_total_contract = (
-                (usd_per_saca * sacas_total) if (usd_per_saca is not None and sacas_total > 0) else None
-            )
+            usd_total_contract = (usd_per_saca * sacas_total) if (usd_per_saca is not None and sacas_total > 0) else None
 
             # -------------------------
             # FX mix system/manual
@@ -423,7 +554,7 @@ class ContractsMtmService:
             fx_sys_live = fx_sys_rate
             fx_man_live = _to_float(getattr(fx_man, "fx", None))
 
-            brl_per_saca_system, lock_usd_sys, unlock_usd_sys, mode_sys = self._fx_brl_per_saca_with_breakdown(
+            brl_per_saca_system_gross, lock_usd_sys, unlock_usd_sys, mode_sys = self._fx_brl_per_saca_with_breakdown(
                 usd_per_saca=usd_per_saca,
                 sacas_total=sacas_total,
                 fx_locked_rate=fx_locked_rate,
@@ -431,7 +562,7 @@ class ContractsMtmService:
                 fx_live_rate=fx_sys_live,
                 fx_cov_fallback=fx_cov,
             )
-            brl_per_saca_manual, lock_usd_man, unlock_usd_man, mode_man = self._fx_brl_per_saca_with_breakdown(
+            brl_per_saca_manual_gross, lock_usd_man, unlock_usd_man, mode_man = self._fx_brl_per_saca_with_breakdown(
                 usd_per_saca=usd_per_saca,
                 sacas_total=sacas_total,
                 fx_locked_rate=fx_locked_rate,
@@ -440,13 +571,21 @@ class ContractsMtmService:
                 fx_cov_fallback=fx_cov,
             )
 
-            brl_total_system = (
-                (brl_per_saca_system * sacas_total) if (brl_per_saca_system is not None and sacas_total > 0) else None
+            # ✅ FRETE (sempre líquido = bruto - frete_total)
+            frete_total = self._frete_brl_total(c)
+
+            brl_per_saca_system, brl_total_system, brl_total_system_gross = self._apply_frete_net(
+                brl_per_saca=brl_per_saca_system_gross,
+                sacas_total=sacas_total,
+                frete_total=frete_total,
             )
-            brl_total_manual = (
-                (brl_per_saca_manual * sacas_total) if (brl_per_saca_manual is not None and sacas_total > 0) else None
+            brl_per_saca_manual, brl_total_manual, brl_total_manual_gross = self._apply_frete_net(
+                brl_per_saca=brl_per_saca_manual_gross,
+                sacas_total=sacas_total,
+                frete_total=frete_total,
             )
 
+            # FX efetivo deve refletir BRL/sc líquido
             fx_eff_system = self._safe_div(brl_per_saca_system, usd_per_saca)
             fx_eff_manual = self._safe_div(brl_per_saca_manual, usd_per_saca)
 
@@ -456,46 +595,26 @@ class ContractsMtmService:
                     manual=self._r(usd_per_saca, 4) if mode in ("manual", "both") else None,
                 ),
                 brl_per_saca=ValuationSide(
+                    # ✅ agora líquido
                     system=self._r(brl_per_saca_system, 4) if mode in ("system", "both") else None,
                     manual=self._r(brl_per_saca_manual, 4) if mode in ("manual", "both") else None,
                 ),
                 components={
-                    "cbot_locked_usd_per_bu": UsedComponent(
-                        system=self._r(locked_usd_per_bu, 6),
-                        manual=self._r(locked_usd_per_bu, 6),
-                    ),
-                    "cbot_live_usd_per_bu": UsedComponent(
-                        system=self._r(live_usd_per_bu, 6),
-                        manual=self._r(live_usd_per_bu, 6),
-                    ),
-                    "cbot_effective_usd_per_bu": UsedComponent(
-                        system=self._r(cbot_effective, 6),
-                        manual=self._r(cbot_effective, 6),
-                    ),
-                    "premium_locked_usd_per_bu": UsedComponent(
-                        system=self._r(prem_locked, 6),
-                        manual=self._r(prem_locked, 6),
-                    ),
-                    "premium_effective_usd_per_bu": UsedComponent(
-                        system=self._r(prem_effective, 6),
-                        manual=self._r(prem_effective, 6),
-                    ),
-                    "fx_locked_brl_per_usd": UsedComponent(
-                        system=self._r(fx_locked_rate, 6),
-                        manual=self._r(fx_locked_rate, 6),
-                    ),
-                    "fx_locked_usd_amount": UsedComponent(
-                        system=self._r(fx_locked_usd_amount, 4),
-                        manual=self._r(fx_locked_usd_amount, 4),
-                    ),
-                    "fx_live_brl_per_usd": UsedComponent(
-                        system=self._r(fx_sys_live, 6),
-                        manual=self._r(fx_man_live, 6),
-                    ),
-                    "fx_effective_brl_per_usd": UsedComponent(
-                        system=self._r(fx_eff_system, 6),
-                        manual=self._r(fx_eff_manual, 6),
-                    ),
+                    "cbot_locked_usd_per_bu": UsedComponent(system=self._r(locked_usd_per_bu, 6), manual=self._r(locked_usd_per_bu, 6)),
+                    "cbot_live_usd_per_bu": UsedComponent(system=self._r(live_usd_per_bu, 6), manual=self._r(live_usd_per_bu, 6)),
+                    "cbot_effective_usd_per_bu": UsedComponent(system=self._r(cbot_effective, 6), manual=self._r(cbot_effective, 6)),
+                    "premium_locked_usd_per_bu": UsedComponent(system=self._r(prem_locked, 6), manual=self._r(prem_locked, 6)),
+                    "premium_effective_usd_per_bu": UsedComponent(system=self._r(prem_effective, 6), manual=self._r(prem_effective, 6)),
+                    "fx_locked_brl_per_usd": UsedComponent(system=self._r(fx_locked_rate, 6), manual=self._r(fx_locked_rate, 6)),
+                    "fx_locked_usd_amount": UsedComponent(system=self._r(fx_locked_usd_amount, 4), manual=self._r(fx_locked_usd_amount, 4)),
+                    "fx_live_brl_per_usd": UsedComponent(system=self._r(fx_sys_live, 6), manual=self._r(fx_man_live, 6)),
+                    "fx_effective_brl_per_usd": UsedComponent(system=self._r(fx_eff_system, 6), manual=self._r(fx_eff_manual, 6)),
+                    # ✅ debug frete
+                    "frete_brl_total": UsedComponent(system=self._r(frete_total, 4), manual=self._r(frete_total, 4)),
+                    "brl_per_saca_gross": UsedComponent(system=self._r(brl_per_saca_system_gross, 4), manual=self._r(brl_per_saca_manual_gross, 4)),
+                    "brl_per_saca_net": UsedComponent(system=self._r(brl_per_saca_system, 4), manual=self._r(brl_per_saca_manual, 4)),
+                    "brl_total_gross": UsedComponent(system=self._r(brl_total_system_gross, 4), manual=self._r(brl_total_manual_gross, 4)),
+                    "brl_total_net": UsedComponent(system=self._r(brl_total_system, 4), manual=self._r(brl_total_manual, 4)),
                 },
             )
 
@@ -509,43 +628,96 @@ class ContractsMtmService:
                 sacas_total=self._r(sacas_total, 0) or 0.0,
                 usd_total_contract=self._r(usd_total_contract, 4),
                 brl_total_contract=TotalsSide(
+                    # ✅ agora líquido
                     system=self._r(brl_total_system, 4) if mode in ("system", "both") else None,
                     manual=self._r(brl_total_manual, 4) if mode in ("manual", "both") else None,
                 ),
-                fx_locked_usd_used=TotalsSide(
-                    system=self._r(lock_usd_sys, 4),
-                    manual=self._r(lock_usd_man, 4),
-                ),
-                fx_unlocked_usd_used=TotalsSide(
-                    system=self._r(unlock_usd_sys, 4),
-                    manual=self._r(unlock_usd_man, 4),
-                ),
+                fx_locked_usd_used=TotalsSide(system=self._r(lock_usd_sys, 4), manual=self._r(lock_usd_man, 4)),
+                fx_unlocked_usd_used=TotalsSide(system=self._r(unlock_usd_sys, 4), manual=self._r(unlock_usd_man, 4)),
                 fx_lock_mode=TotalsModeSide(system=mode_sys, manual=mode_man),
-                fx_locked_usd_pct=TotalsSide(
-                    system=self._r(lock_pct_sys, 6),
-                    manual=self._r(lock_pct_man, 6),
-                ),
-                fx_unlocked_usd_pct=TotalsSide(
-                    system=self._r(unlock_pct_sys, 6),
-                    manual=self._r(unlock_pct_man, 6),
-                ),
+                fx_locked_usd_pct=TotalsSide(system=self._r(lock_pct_sys, 6), manual=self._r(lock_pct_man, 6)),
+                fx_unlocked_usd_pct=TotalsSide(system=self._r(unlock_pct_sys, 6), manual=self._r(unlock_pct_man, 6)),
             )
 
-            rows.append(
-                ContractMtmRow(
-                    contract=ContractBrief.from_orm(c),
-                    locks=locks,
-                    quotes=quotes,
-                    valuation=valuation,
-                    totals=totals,
+            # -------------------------
+            # ✅ filtros simples + fatia (AND)
+            # -------------------------
+            pct_map = {
+                "cbot": float(locks.cbot.coverage_pct or 0.0),
+                "premium": float(locks.premium.coverage_pct or 0.0),
+                "fx": float(locks.fx.coverage_pct or 0.0),
+            }
+            st_cbot = self._state_simple(pct_map["cbot"])
+            st_prem = self._state_simple(pct_map["premium"])
+            st_fx = self._state_simple(pct_map["fx"])
+
+            if filters_active:
+                pcts = [pct_map[t] for t in selected_types]
+                locked_pct = self._locked_pct_and(pcts)  # min
+                open_pct = self._open_pct_and(pcts)      # 1 - max
+
+                want_locked = "locked" in selected_states
+                want_open = "open" in selected_states
+
+                # passa se a fatia escolhida existir (>0)
+                if want_locked and not want_open:
+                    if locked_pct <= 0.0:
+                        continue
+                elif want_open and not want_locked:
+                    if open_pct <= 0.0:
+                        continue
+                else:
+                    if (locked_pct <= 0.0) and (open_pct <= 0.0):
+                        continue
+
+                slice_pct = self._slice_pct_from_states(locked_pct, open_pct, selected_states)
+
+                filter_meta = RowFilterMeta(
+                    lock_types=sorted(selected_types),    # type: ignore
+                    lock_states=sorted(selected_states),  # type: ignore
+                    state_cbot=st_cbot,                   # type: ignore
+                    state_premium=st_prem,                # type: ignore
+                    state_fx=st_fx,                       # type: ignore
+                    pct_cbot=self._r(pct_map["cbot"], 6) or 0.0,
+                    pct_premium=self._r(pct_map["premium"], 6) or 0.0,
+                    pct_fx=self._r(pct_map["fx"], 6) or 0.0,
+                    locked_pct=self._r(locked_pct, 6) or 0.0,
+                    open_pct=self._r(open_pct, 6) or 0.0,
+                    slice_pct=self._r(slice_pct, 6) or 0.0,
                 )
-            )
+
+                totals_view = self._mul_totals_view(totals, slice_pct)
+
+                rows.append(
+                    ContractMtmRow(
+                        contract=ContractBrief.from_orm(c),
+                        locks=locks,
+                        quotes=quotes,
+                        valuation=valuation,
+                        totals=totals,
+                        totals_view=totals_view,
+                        filter_meta=filter_meta,
+                    )
+                )
+            else:
+                rows.append(
+                    ContractMtmRow(
+                        contract=ContractBrief.from_orm(c),
+                        locks=locks,
+                        quotes=quotes,
+                        valuation=valuation,
+                        totals=totals,
+                        totals_view=None,
+                        filter_meta=None,
+                    )
+                )
 
         return ContractsMtmResponse(
             farm_id=farm_id,
             as_of_ts=as_of_ts,
             mode=mode,
             fx_ref_mes=forced_ref_mes,
+            no_locks=no_locks,
             rows=rows,
         )
 

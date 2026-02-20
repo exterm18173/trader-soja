@@ -1,5 +1,4 @@
 // lib/views/contracts_mtm_dashboard/contracts_mtm_dashboard_screen.dart
-// ... seus imports
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -10,6 +9,7 @@ import '../../widgets/common/loading_widget.dart';
 import '../../widgets/common/error_retry_widget.dart';
 
 import 'widgets/header_meta.dart';
+import 'widgets/locks_filters_bar.dart';
 import 'widgets/view_side_toggle.dart';
 import 'widgets/kpi_grid.dart';
 import 'widgets/value_distribution_card.dart';
@@ -135,6 +135,14 @@ class _ContractsMtmDashboardScreenState
                 const SizedBox(height: 12),
 
                 ViewSideToggle(value: vm.viewSide, onChanged: vm.setViewSide),
+                const SizedBox(height: 12),
+
+                LocksFiltersBar(
+                  farmId: widget.farmId,
+                  autoApply: false,
+                  initiallyCollapsed: true,
+                ),
+
                 const SizedBox(height: 16),
 
                 // ✅ passa “tick” para ajudar animações (opcional)
@@ -220,6 +228,7 @@ class _ContractsMtmDashboardScreenState
                   fxUi: vm.fxUi,
                   brlOf: vm.brlOfRow,
                   usdOf: vm.usdOfRow,
+                  viewSide: vm.viewSide,
                   initialSort: const TableSort(
                     column: ContractsSortColumn.totalBrl,
                     ascending: false,
